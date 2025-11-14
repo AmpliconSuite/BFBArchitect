@@ -1,0 +1,1 @@
+[BFBVisualizer:INFO]	Command: python ~/BFBArchitect/src/BFBVisualizer.py --graph sample_graph.txt --cycle sample_cycles.txt --cnr BFBArchitect_input/sample.sorted.cnr --output_prefix sample

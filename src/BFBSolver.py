@@ -1,0 +1,287 @@
+from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
+
+def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
+    model = LpProblem(name="BFB_reconstruction", sense=LpMinimize)
+    
+    T = round(max(sum(L) + sum(R) + 1, max(C)))
+    print('Total time points:', T)
+    # Initialize binary variables for consecutive-sequences
+    segment_num = len(C)
+    cs = {}
+    for i in range(1, segment_num+1):
+        for j in range(i, segment_num+1):
+            for t in range(1, T+1):
+                key1 = f'{i}_{j}_0_{t}'
+                key2 = f'{i}_{j}_1_{t}'
+                cs[key1] = LpVariable(name=f'cs_{key1}', cat="Binary")
+                cs[key2] = LpVariable(name=f'cs_{key2}', cat="Binary")
+    
+    # Define the objective function
+    objective = 0
+    segment_cn_error = []
+    left_fb_error, right_fb_error = [], []
+    w1, w2, w3 = 1, 1, segment_num/2  # weights for different error types
+    for k in range(1, segment_num+1):
+        segment_cn_error.append(LpVariable(name=f'segment_error_{k}', lowBound=0))
+        objective += w1 * segment_cn_error[k-1]
+        left_fb_error.append(LpVariable(name=f'left_fb_error_{k}', lowBound=0))
+        objective += w2 * left_fb_error[k-1]
+        right_fb_error.append(LpVariable(name=f'right_fb_error_{k}', lowBound=0))
+        objective += w2 * right_fb_error[k-1]
+        # missing foldbacks
+        right_fb = 0
+        for i in range(1, k+1):
+            for t in range(1, T):
+                right_fb += cs[f'{i}_{k}_0_{t}']
+        if R[k-1] == 0:
+            missing_fb = LpVariable(name=f'missing_right_fb_{k}', cat="Binary")
+            # model += (missing_fb >= right_fb, f'constraint_missing_right_{k}')
+            model += (missing_fb <= right_fb, f'constraint_missing_right_{k}_lower_bound')
+            model += (T * missing_fb >= right_fb, f'constraint_missing_right_{k}_upper_bound')
+            objective += w3 * missing_fb
+        left_fb = 0
+        for j in range(k, segment_num+1):
+            for t in range(1, T):
+                left_fb += cs[f'{k}_{j}_1_{t}']
+        if L[k-1] == 0:
+            missing_fb = LpVariable(name=f'missing_left_fb_{k}', cat="Binary")
+            # model += (missing_fb >= left_fb, f'constraint_missing_left_{k}')
+            model += (missing_fb <= left_fb, f'constraint_missing_left_{k}_lower_bound')
+            model += (T * missing_fb >= left_fb, f'constraint_missing_left_{k}_upper_bound')
+            objective += w3 * missing_fb
+
+    model += objective 
+
+    for k in range(1, segment_num+1):
+        # Segment copy number discrepancy
+        seg_cn = 0
+        for i in range(1, k+1):
+            for j in range(k, segment_num+1):
+                for t in range(1, T+1):
+                    seg_cn += cs[f'{i}_{j}_0_{t}'] + cs[f'{i}_{j}_1_{t}']
+        model += (seg_cn - C[k-1] <= segment_cn_error[k-1], f'constraint_segment_{k}')
+        model += (seg_cn - C[k-1] >= -segment_cn_error[k-1], f'constraint_segment_{k}*')
+        # Right foldback count discrepancy
+        right_fb = 0
+        for i in range(1, k+1):
+            for t in range(1, T):
+                right_fb += cs[f'{i}_{k}_0_{t}']
+        model += (right_fb - R[k-1] <= right_fb_error[k-1], f'constraint_right_{k}')
+        model += (right_fb - R[k-1] >= -right_fb_error[k-1], f'constraint_right_{k}*')
+        # Left foldback count discrepancy
+        left_fb = 0
+        for j in range(k, segment_num+1):
+            for t in range(1, T):
+                left_fb += cs[f'{k}_{j}_1_{t}']
+        model += (left_fb - L[k-1] <= left_fb_error[k-1], f'constraint_left_{k}')
+        model += (left_fb - L[k-1] >= -left_fb_error[k-1], f'constraint_left_{k}*')
+    
+    # Add the constraints to the model
+    # Define variables for constraints
+    pa = {} # indicator for palindrome between time t1 and t2 (exclusive)
+    rc = {} # indicator for reverse complement between consecutive-sequences added at t1 + 1 and t2 - 1
+    sc = {} # indicator for super consecutive-sequence added at time t1 for consecutive-sequence added at time t2 and a palindrome between t1 and t2
+    keys = [f'{i}_{j}_0' for i in range(1, segment_num+1) for j in range(i, segment_num+1)] + \
+                    [f'{i}_{j}_1' for i in range(1, segment_num+1) for j in range(i, segment_num+1)]
+    for t1 in range(1, T+1):
+        for t2 in range(t1+1, T+1):
+            pa[f'{t1}_{t2}'] = LpVariable(name=f'pa_{t1}_{t2}', cat="Binary")
+            for s in keys:
+                rc[f'{s}_{t1}_{t2}'] = LpVariable(name=f'rc_{s}_{t1}_{t2}', cat="Binary")
+                sc[f'{s}_{t1}_{t2}'] = LpVariable(name=f'sc_{s}_{t1}_{t2}', cat="Binary")
+    # Constraint 1: Initial sequence
+    if start > 0:
+        model += (cs[f'1_{segment_num}_0_1'] == 1, 'constraint_initial_+')
+    else:
+        model += (cs[f'1_{segment_num}_1_1'] == 1, 'constraint_initial_-')
+    # Constraint 2: Empty sequence is palindromic
+    for t in range(1, T):
+        model += (pa[f'{t}_{t+1}'] == 1, f'constraint_empty_palindrome_{t}_{t+1}')
+    # Constraint 3: Exactly one consecutive-sequence is added at each time point
+    for t in range(1, T+1):
+        expression = lpSum([cs[f'{s}_{t}'] for s in keys])
+        model += (expression == 1, f'constraint_one_cs_{t}')
+    # Constraint 4: The direction alternates between consecutive time points
+    for t in range(1, T):
+        expression = lpSum([cs[f'{i}_{j}_0_{t}'] - cs[f'{i}_{j}_1_{t}'] for i in range(1, segment_num+1) for j in range(i, segment_num+1)]) + \
+                     lpSum([cs[f'{i}_{j}_0_{t+1}'] - cs[f'{i}_{j}_1_{t+1}'] for i in range(1, segment_num+1) for j in range(i, segment_num+1)])
+        model += (expression == 0, f'constraint_alternate_direction_{t}')
+    # Constraint 5: For time points t1 and t2 (t1 < t2), 
+    # if the consecutive-sequence added at t1 + 1 and t2 - 1 are reverse complements, rc[t1][t2] = 1
+    for t1 in range(1, T):
+        for t2 in range(t1+1, T+1):
+            for s in keys:
+                s_bar = f'{s[:-1]}{"1" if s[-1]=="0" else "0"}' # reverse complement of s
+                model += (rc[f'{s}_{t1}_{t2}'] <= cs[f'{s}_{t1 + 1}'], f'constraint_rc1_{s}_{t1}_{t2}')
+                model += (rc[f'{s}_{t1}_{t2}'] <= cs[f'{s_bar}_{t2 - 1}'], f'constraint_rc2_{s}_{t1}_{t2}')
+                model += (rc[f'{s}_{t1}_{t2}'] >= cs[f'{s}_{t1 + 1}'] + cs[f'{s_bar}_{t2 - 1}'] - 1, f'constraint_rc3_{s}_{t1}_{t2}')
+    # Constraint 6: For time points t1 and t2 (t1 < t2 and t2 - t1 - 1 is even), 
+    # if the sequence betwwen t1 and t2 is a plindrome 
+    # and the consecutive-sequence added at t1 is a reverse complement of that added at t2
+    # then pa[t1][t2] = 1
+    for t1 in range(1, T):
+        for t2 in range(t1+3, T+1, 2):
+            M = lpSum([rc[f'{s}_{t1}_{t2}'] for s in keys])
+            model += (pa[f'{t1}_{t2}'] <= pa[f'{t1 + 1}_{t2 - 1}'], f'constraint_pa1_{t1}_{t2}')
+            model += (pa[f'{t1}_{t2}'] <= M, f'constraint_pa2_{t1}_{t2}')
+            model += (pa[f'{t1}_{t2}'] >= pa[f'{t1 + 1}_{t2 - 1}'] + M - 1, f'constraint_pa3_{t1}_{t2}')
+    # Constraint 7: For time points t1 and t2 (t1 < t2), 
+    # if the consecutive-sequence added at t1 is a super consecutive-sequence of that added at t2
+    # and the sequence between t1 and t2 is a palindrome, then sc[t1][t2] = 1
+    for t1 in range(1, T):
+        for t2 in range(t1+1, T+1):
+            for s in keys:
+                i, j, d = s.split('_')
+                if d == '0':
+                    super_keys = [f'{i}_{k}_1' for k in range(int(j), segment_num+1)]
+                else:
+                    super_keys = [f'{k}_{j}_0' for k in range(1, int(i)+1)]
+                super_count = lpSum([cs[f'{sk}_{t1}'] for sk in super_keys])
+                model += (sc[f'{s}_{t1}_{t2}'] <= super_count, f'constraint_sc1_{s}_{t1}_{t2}')
+                model += (sc[f'{s}_{t1}_{t2}'] <= pa[f'{t1}_{t2}'], f'constraint_sc2_{s}_{t1}_{t2}')
+                model += (sc[f'{s}_{t1}_{t2}'] >= super_count + pa[f'{t1}_{t2}'] - 1, f'constraint_sc3_{s}_{t1}_{t2}')
+    # Constraint 8: cs is bounded by sc
+    for t2 in range(2, T+1):
+        for s in keys:
+            total_sc = lpSum([sc[f'{s}_{t1}_{t2}'] for t1 in range(1, t2)])
+            model += (cs[f'{s}_{t2}'] <= total_sc, f'constraint_cs_sc_{s}_{t2}')
+    
+    # Solve the problem
+    status = model.solve(PULP_CBC_CMD(timeLimit=max_time, threads=max_threads,  options=["RandomS 42"]))
+    # print(f'Objective: {model.objective.value()}')
+
+    # Get consecutive-sequences added at each time point (all cs = 1)
+    consecutive_sequences = []
+    for var in model.variables():
+        if var.value() > 0 and var.name.startswith('cs_'):
+            # print(var)
+            i, j, d, t = var.name[3:].split('_')
+            consecutive_sequences.append((int(i), int(j), int(d), int(t)))
+        # elif 'error' in var.name:
+        #     print(var, var.value())
+    consecutive_sequences = sorted(consecutive_sequences, key=lambda x: x[3])
+    # print(consecutive_sequences)
+    BFB_string = []
+    for (i, j, d, _) in consecutive_sequences:
+        if d == 0:
+            segment = [x for x in range(i, j+1)]
+        else:
+            segment = [-x for x in range(j, i-1, -1)]
+        BFB_string += segment
+    return BFB_string, model.objective.value()
+
+def check_BFB_string(string):
+    if len(string) == 0:
+        return False
+    original_len = max([abs(seg) for seg in string])
+    pos = len(string) - 1
+    # print(pos)
+    while pos >= original_len:
+        # Find the longest palindromic suffix
+        positions = [i for i, seg in enumerate(string[:pos]) if seg == -string[pos]]
+        i = None
+        for j in positions:
+            if is_palindrome(string[j:pos+1]):
+                i = j
+                break
+        if i == None:
+            return False
+        pos = (i+pos)//2
+        # print(pos)
+    return True
+
+def is_palindrome(sequence):
+    # Check if a new sequence is a palindrome with even length
+    if len(sequence) % 2 == 1:
+        return False
+    i, mid = 0, len(sequence)//2
+    while i < mid:
+        if sequence[i] != -sequence[-i-1]:
+            return False
+        i += 1
+    return True
+
+def print_BFB_string(BFB_string):
+    sequence = []
+    for segment in BFB_string:
+        if segment > 0:
+            sequence.append(str(segment) + '+')
+        else:
+            # sequence += str(-segment) + '\u0305 '
+            sequence.append(str(-segment) + '-')
+    string = ','.join(sequence)
+    print(string)
+    return string
+
+if __name__ == '__main__':
+    # error-free examples
+    start = 1
+    C = [9, 5, 3, 4]
+    L = [4, 0, 0, 1]
+    R = [2, 1, 0, 2]
+
+    start = -5
+    C = [4, 4, 6, 3, 1]
+    L = [2, 0, 2, 0, 0]
+    R = [0, 1, 1, 1, 0]
+
+    start = 1
+    C = [1, 1, 5, 6, 8]
+    L = [0, 0, 2, 0, 1]
+    R = [0, 0, 0, 0, 4]
+
+    start = 1
+    C = [1, 7, 5]
+    L = [0, 3, 0]
+    R = [0, 1, 2]
+    
+    start = 1
+    C = [1, 7, 5, 3]
+    L = [0, 3, 0, 0]
+    R = [0, 1, 1, 1]
+
+    start = 1
+    C = [1, 6, 8, 2]
+    L = [0, 2, 1, 0]
+    R = [0, 0, 3, 1]
+
+    # examples with errors
+    start = 1
+    # C = [8, 6, 14, 34, 26, 23]
+    # L = [3, 0, 0, 10, 0, 1]
+    # R = [0, 0, 0, 5, 0, 12]
+
+    C = [2, 6, 11, 13, 9, 3]
+    L = [0, 2, 3, 0, 0, 0]
+    R = [0, 0, 0, 1, 3, 1]
+
+    # C = [11, 9, 11, 5]
+    # L = [4, 0, 0, 0]
+    # R = [0, 0, 3, 1]
+
+    # C = [11, 20, 22, 5]
+    # L = [5, 5, 0, 0]
+    # R = [0, 0, 6, 1]
+
+    # C = [37, 34, 37, 41, 38, 39, 37, 38, 42, 40, 19, 10, 8, 11, 7]
+    # L = [18, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+    # R = [0, 0, 0, 0, 0, 1, 0, 0, 0, 12, 4, 0, 0, 2, 0]
+
+    C = [0,2,2,0,2,1]
+    L = [0,0,0,0,0,0]
+    R = [0,0,1,0,0,0]
+
+    # start = -5
+    # C = [5, 8, 9, 10, 9] 
+    # L = [0, 0, 0, 0, 0]
+    # R = [0, 0, 0, 0, 1]
+
+    # start = -8
+    # C = [6, 7, 6, 7, 11, 13, 9, 3]
+    # L = [2, 0, 0, 0, 3, 0, 0, 0]
+    # R = [0, 0, 0, 0, 0, 1, 3, 1]
+
+    BFB_string, obj_val = reconstruct_BFB_string(C, L, R, start, max_time=None, max_threads=12)
+    print('Output:', obj_val, BFB_string)
+    print('BFB' if check_BFB_string(BFB_string) else 'Not BFB')
+    print_BFB_string(BFB_string)
