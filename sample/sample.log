@@ -1,0 +1,14 @@
+[BFBArchitect:INFO]	Command: python ~/BFBArchitect/src/BFBArchitect.py --bam BFBArchitect_input/sample.sorted.bam --cns BFBArchitect_input/sample.sorted.cns --regions chr7:120000000-125000000 --output_prefix sample --coverage 15.0
+[BFBArchitect:INFO]	Normal coverage: 15.0
+[BFBArchitect:INFO]	Start segment: 1
+[BFBArchitect:INFO]	cn0: [1, 10, 5, 3, 7]
+[BFBArchitect:INFO]	lf0: [0, 4, 0, 0, 2]
+[BFBArchitect:INFO]	rf0: [0, 2, 1, 0, 4]
+[BFBArchitect:INFO]	Multiplicity: 1
+[BFBArchitect:INFO]	ILP objective value: 2.0
+[BFBArchitect:INFO]	CN discrepancy: 0.2361111111111111
+[BFBArchitect:INFO]	Foldback Euclidean distance: 0.0
+[BFBArchitect:INFO]	Foldback score: 0
+[BFBArchitect:INFO]	Nanopore score: 0.06904854675927984
+[BFBArchitect:INFO]	Final score: 0.30515965787039095
+[BFBArchitect:INFO]	Total time: 41.33865284919739 seconds

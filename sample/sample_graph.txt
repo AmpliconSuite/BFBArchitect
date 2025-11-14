@@ -1,0 +1,17 @@
+SequenceEdge: StartPosition, EndPosition, PredictedCN, AverageCoverage, Size, NumberOfLongReads
+sequence	chr7:120000001-	chr7:123649137+	1	15.953404599498457	3649137	11764
+sequence	chr7:123649138-	chr7:124186212+	10	84.07632453567938	537075	8843
+sequence	chr7:124186213-	chr7:124347510+	5	48.4874021996553	161298	1607
+sequence	chr7:124347511-	chr7:124740114+	3	31.59089311367179	392604	2494
+sequence	chr7:124740115-	chr7:124999999+	7	61.75353714142794	259885	3388
+BreakpointEdge: StartPosition->EndPosition, PredictedCN, NumberOfLongReads
+concordant	chr7:123649137+->chr7:123649138-	1	50
+concordant	chr7:124186212+->chr7:124186213-	5	66
+concordant	chr7:124347510+->chr7:124347511-	3	40
+concordant	chr7:124740114+->chr7:124740115-	3	46
+discordant	chr7:123649138-->chr7:123650665-	4	33
+discordant	chr7:124184685+->chr7:124186212+	2	14
+discordant	chr7:124346947+->chr7:124347510+	1	7
+discordant	chr7:124740115-->chr7:124740275-	2	17
+discordant	chr7:124807844+->chr7:124840986-	7	51
+discordant	chr7:124998462+->chr7:124999999+	4	29
