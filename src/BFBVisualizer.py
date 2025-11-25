@@ -3,8 +3,12 @@ import argparse
 import pandas as pd
 from pathlib import Path
 
-from src.datatypes import SV, CHR_CENTRO
-from src.utils import create_logger
+try:
+    from src.datatypes import SV, CHR_CENTRO
+    from src.utils import create_logger
+except:
+    from datatypes import SV, CHR_CENTRO
+    from utils import create_logger
 
 font = {'family' : 'Arial',
         'size'   : 12}

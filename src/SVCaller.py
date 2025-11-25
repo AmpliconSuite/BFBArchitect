@@ -3,7 +3,10 @@ from collections import defaultdict
 import re
 import argparse
 
-from src.datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
+try:
+    from src.datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
+except:
+    from datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
 
 def query_ends_from_cigar(cigar_str: str, strand: str) -> tuple[int, int, int]:
     """

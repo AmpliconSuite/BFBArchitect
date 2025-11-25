@@ -5,10 +5,16 @@ import pysam
 from collections import defaultdict
 from pathlib import Path
 
-from src.SVCaller import call_SVs
-from src.BFBSolver import reconstruct_BFB_string, check_BFB_string, print_BFB_string
-from src.datatypes import CHR_CENTRO
-from src.utils import create_logger
+try:
+    from src.SVCaller import call_SVs
+    from src.BFBSolver import reconstruct_BFB_string, check_BFB_string, print_BFB_string
+    from src.datatypes import CHR_CENTRO
+    from src.utils import create_logger
+except:
+    from SVCaller import call_SVs
+    from BFBSolver import reconstruct_BFB_string, check_BFB_string, print_BFB_string
+    from datatypes import CHR_CENTRO
+    from utils import create_logger
 
 def get_normal_coverage(cns_fn, bam_fn):
     # Get normal genome regions
