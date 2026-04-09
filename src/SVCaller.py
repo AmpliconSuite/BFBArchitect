@@ -74,7 +74,7 @@ def cluster_SVs(SVs, max_bp_distance = 100):
     clustered_sv = dict(sorted(clustered_sv.items(), key=lambda item: (CHR_TO_IDX[item[0].chrom1], item[0].bp1)))
     return clustered_sv
 
-def call_SVs(bam_file, region, min_mapq=20, max_mn=0.1, min_ref_length=100, output_fn=None, normal_cov=10):
+def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, normal_cov=10, min_cn=0.75):
     """Find SVs in a specific region"""
     bam = pysam.AlignmentFile(bam_file, 'rb')
     reads = bam.fetch() if region == None else bam.fetch(region[0], region[1], region[2])
@@ -99,8 +99,7 @@ def call_SVs(bam_file, region, min_mapq=20, max_mn=0.1, min_ref_length=100, outp
             primary_start = primary_pos + ref_length - 1
             primary_end = primary_pos
         mapping_quality, edit_dist = float(read.mapping_quality), float(read.get_tag("NM"))/(read_end-read_start)
-        if primary_chrom[3:].isnumeric() and mapping_quality > min_mapq \
-            and edit_dist < max_mn and ref_length > min_ref_length:
+        if primary_chrom in CHR_TO_IDX and mapping_quality >= min_mapq and ref_length >= min_ref_length:
             alignment = CigarAlignment(primary_chrom, primary_start, primary_end, primary_strand, \
                                    ref_length, read.query_name, read_start, read_end, mapping_quality, edit_dist)
             if alignment not in alignments[read.query_name]:
@@ -117,8 +116,7 @@ def call_SVs(bam_file, region, min_mapq=20, max_mn=0.1, min_ref_length=100, outp
             sa_cigar = sa_info[3]
             (read_start, read_end, ref_length) = query_ends_from_cigar(sa_cigar, sa_strand)
             mapping_quality, edit_dist = float(sa_info[4]), float(sa_info[-1])/(read_end-read_start)
-            if sa_chrom[3:].isnumeric() == False or mapping_quality < min_mapq \
-                or edit_dist > max_mn or ref_length < min_ref_length:
+            if sa_chrom not in CHR_TO_IDX or mapping_quality < min_mapq or ref_length < min_ref_length:
                 continue
             if sa_strand == "+":
                 sa_start = sa_pos
@@ -165,7 +163,7 @@ def call_SVs(bam_file, region, min_mapq=20, max_mn=0.1, min_ref_length=100, outp
     for sv, read_list in SVs.items():
         if sv in TST_SVs:
             sv.TST = True
-        # remove duplicate read_anme
+        # remove duplicate read_names
         unique_reads = defaultdict(list)
         for read, gap in read_list:
             unique_reads[read].append(gap)
@@ -175,16 +173,14 @@ def call_SVs(bam_file, region, min_mapq=20, max_mn=0.1, min_ref_length=100, outp
         output_file = open(output_fn, 'a')
         output_file.write('SV\tSV_type\tTST\t#Support_reads\tQuery_gaps\tSupport_reads\n')
         for sv, info in SVs.items():
-            if 2*len(info)/normal_cov < 0.75 or len(info) < 3:
-            # if 2*len(info)/normal_cov < 0.75 or len(info) < 2:
+            if 2*len(info)/normal_cov < min_cn:
                 continue
             reads, query_gaps = [read for (read, _) in info], [str(gap) for (_, gap) in info]
             output_file.write(f'{sv}\t{sv.type}\t{sv.TST}\t{len(info)}\t{','.join(query_gaps)}\t{','.join(reads)}\n')
         output_file.close()
     output_inversions = {}
     for sv, info in SVs.items():
-        if 2*len(info)/normal_cov < 0.75 or len(info) < 3:
-        # if 2*len(info)/normal_cov < 0.75 or len(info) < 2:
+        if 2*len(info)/normal_cov < min_cn:
             continue
         output_inversions[sv] = len(info)
     return output_inversions

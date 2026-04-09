@@ -1,4 +1,6 @@
 from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
+import gurobipy as gp
+from gurobipy import GRB
 
 def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
     model = LpProblem(name="BFB_reconstruction", sense=LpMinimize)
@@ -170,6 +172,231 @@ def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
         BFB_string += segment
     return BFB_string, model.objective.value()
 
+def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50):
+    # Build model
+    m = gp.Model("BFB_reconstruction")
+    m.Params.TimeLimit = max_time
+    m.Params.Threads = max_threads
+
+    # Solution pool settings
+    # Mode 2 searches for multiple solutions; PoolSolutions caps how many are kept.
+    m.Params.PoolSearchMode = 2
+    m.Params.PoolSolutions = pool_solutions
+    # If you want only optimal solutions, keep PoolGap at 0 (default)
+    m.Params.PoolGap = 0.0
+
+    segment_num = len(C)
+    T = round(max(sum(L) + sum(R) + 1, max(C)))
+    print("Total time points:", T)
+
+    # Variables
+    cs = {}  # consecutive-sequence binary vars: cs[i_j_d_t]
+    for i in range(1, segment_num + 1):
+        for j in range(i, segment_num + 1):
+            for t in range(1, T + 1):
+                key0 = f"{i}_{j}_0_{t}"
+                key1 = f"{i}_{j}_1_{t}"
+                cs[key0] = m.addVar(vtype=GRB.BINARY, name=f"cs_{key0}")
+                cs[key1] = m.addVar(vtype=GRB.BINARY, name=f"cs_{key1}")
+
+    # Objective vars and weights
+    w1, w2, w3 = 1, 1, segment_num / 2
+    segment_cn_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"segment_error_{k}") for k in range(1, segment_num + 1)]
+    left_fb_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"left_fb_error_{k}") for k in range(1, segment_num + 1)]
+    right_fb_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"right_fb_error_{k}") for k in range(1, segment_num + 1)]
+
+    # Missing foldback binaries when L[k-1] or R[k-1] == 0
+    missing_right_fb = {}
+    missing_left_fb = {}
+
+    # Objective expression
+    obj = gp.LinExpr()
+
+    # Accumulate objective components and create missing fb vars/constraints
+    for k in range(1, segment_num + 1):
+        obj.addTerms(w1, segment_cn_error[k - 1])
+        obj.addTerms(w2, left_fb_error[k - 1])
+        obj.addTerms(w2, right_fb_error[k - 1])
+
+        # right_fb (sum of cs[i_k_0_t] for i=1..k, t=1..T-1)
+        right_fb_expr = gp.quicksum(cs[f"{i}_{k}_0_{t}"] for i in range(1, k + 1) for t in range(1, T))
+        if R[k - 1] == 0:
+            missing_right_fb[k] = m.addVar(vtype=GRB.BINARY, name=f"missing_right_fb_{k}")
+            # missing_right_fb[k] ≤ right_fb
+            m.addConstr(missing_right_fb[k] <= right_fb_expr, name=f"constraint_missing_right_{k}_lower_bound")
+            # T * missing_right_fb[k] ≥ right_fb
+            m.addConstr(T * missing_right_fb[k] >= right_fb_expr, name=f"constraint_missing_right_{k}_upper_bound")
+            obj.addTerms(w3, missing_right_fb[k])
+
+        # left_fb (sum of cs[k_j_1_t] for j=k..segment_num, t=1..T-1)
+        left_fb_expr = gp.quicksum(cs[f"{k}_{j}_1_{t}"] for j in range(k, segment_num + 1) for t in range(1, T))
+        if L[k - 1] == 0:
+            missing_left_fb[k] = m.addVar(vtype=GRB.BINARY, name=f"missing_left_fb_{k}")
+            m.addConstr(missing_left_fb[k] <= left_fb_expr, name=f"constraint_missing_left_{k}_lower_bound")
+            m.addConstr(T * missing_left_fb[k] >= left_fb_expr, name=f"constraint_missing_left_{k}_upper_bound")
+            obj.addTerms(w3, missing_left_fb[k])
+
+    # Set objective (minimize)
+    m.setObjective(obj, GRB.MINIMIZE)
+
+    # Discrepancy constraints per segment k
+    for k in range(1, segment_num + 1):
+        # seg_cn = sum cs[i_j_0_t] + cs[i_j_1_t] for i=1..k, j=k..segment_num, t=1..T
+        seg_cn_expr = gp.quicksum(cs[f"{i}_{j}_0_{t}"] + cs[f"{i}_{j}_1_{t}"]
+                                  for i in range(1, k + 1)
+                                  for j in range(k, segment_num + 1)
+                                  for t in range(1, T + 1))
+        m.addConstr(seg_cn_expr - C[k - 1] <= segment_cn_error[k - 1], name=f"constraint_segment_{k}")
+        m.addConstr(seg_cn_expr - C[k - 1] >= -segment_cn_error[k - 1], name=f"constraint_segment_{k}*")
+
+        # Right foldback count discrepancy
+        right_fb_expr = gp.quicksum(cs[f"{i}_{k}_0_{t}"] for i in range(1, k + 1) for t in range(1, T))
+        m.addConstr(right_fb_expr - R[k - 1] <= right_fb_error[k - 1], name=f"constraint_right_{k}")
+        m.addConstr(right_fb_expr - R[k - 1] >= -right_fb_error[k - 1], name=f"constraint_right_{k}*")
+
+        # Left foldback count discrepancy
+        left_fb_expr = gp.quicksum(cs[f"{k}_{j}_1_{t}"] for j in range(k, segment_num + 1) for t in range(1, T))
+        m.addConstr(left_fb_expr - L[k - 1] <= left_fb_error[k - 1], name=f"constraint_left_{k}")
+        m.addConstr(left_fb_expr - L[k - 1] >= -left_fb_error[k - 1], name=f"constraint_left_{k}*")
+
+    # Auxiliary binary variables: pa, rc, sc
+    pa = {}  # pa[t1_t2]
+    rc = {}  # rc[s_t1_t2]
+    sc = {}  # sc[s_t1_t2]
+
+    keys = [f"{i}_{j}_0" for i in range(1, segment_num + 1) for j in range(i, segment_num + 1)] + \
+           [f"{i}_{j}_1" for i in range(1, segment_num + 1) for j in range(i, segment_num + 1)]
+
+    for t1 in range(1, T + 1):
+        for t2 in range(t1 + 1, T + 1):
+            pa_key = f"{t1}_{t2}"
+            pa[pa_key] = m.addVar(vtype=GRB.BINARY, name=f"pa_{pa_key}")
+            for s in keys:
+                rc_key = f"{s}_{t1}_{t2}"
+                sc_key = f"{s}_{t1}_{t2}"
+                rc[rc_key] = m.addVar(vtype=GRB.BINARY, name=f"rc_{rc_key}")
+                sc[sc_key] = m.addVar(vtype=GRB.BINARY, name=f"sc_{sc_key}")
+
+    # Constraint 1: Initial sequence
+    if start > 0:
+        m.addConstr(cs[f"1_{segment_num}_0_1"] == 1, name="constraint_initial_+")
+    else:
+        m.addConstr(cs[f"1_{segment_num}_1_1"] == 1, name="constraint_initial_-")
+
+    # Constraint 2: Empty sequence is palindromic
+    for t in range(1, T):
+        m.addConstr(pa[f"{t}_{t + 1}"] == 1, name=f"constraint_empty_palindrome_{t}_{t + 1}")
+
+    # Constraint 3: Exactly one consecutive-sequence is added at each time point
+    for t in range(1, T + 1):
+        expr = gp.quicksum(cs[f"{s}_{t}"] for s in keys)
+        m.addConstr(expr == 1, name=f"constraint_one_cs_{t}")
+
+    # Constraint 4: Direction alternates between consecutive time points
+    for t in range(1, T):
+        expr = gp.quicksum(cs[f"{i}_{j}_0_{t}"] - cs[f"{i}_{j}_1_{t}"]
+                           for i in range(1, segment_num + 1)
+                           for j in range(i, segment_num + 1)) + \
+               gp.quicksum(cs[f"{i}_{j}_0_{t + 1}"] - cs[f"{i}_{j}_1_{t + 1}"]
+                           for i in range(1, segment_num + 1)
+                           for j in range(i, segment_num + 1))
+        m.addConstr(expr == 0, name=f"constraint_alternate_direction_{t}")
+
+    # Constraint 5: Reverse complements between t1+1 and t2-1
+    for t1 in range(1, T):
+        for t2 in range(t1 + 1, T + 1):
+            for s in keys:
+                s_bar = f"{s[:-1]}{'1' if s[-1] == '0' else '0'}"
+                # rc[s_t1_t2] == cs[s_{t1+1}] ∧ cs[s_bar_{t2-1}] via three inequalities
+                m.addConstr(rc[f"{s}_{t1}_{t2}"] <= cs[f"{s}_{t1 + 1}"], name=f"constraint_rc1_{s}_{t1}_{t2}")
+                m.addConstr(rc[f"{s}_{t1}_{t2}"] <= cs[f"{s_bar}_{t2 - 1}"], name=f"constraint_rc2_{s}_{t1}_{t2}")
+                m.addConstr(rc[f"{s}_{t1}_{t2}"] >= cs[f"{s}_{t1 + 1}"] + cs[f"{s_bar}_{t2 - 1}"] - 1, name=f"constraint_rc3_{s}_{t1}_{t2}")
+
+    # Constraint 6: Palindrome propagation
+    for t1 in range(1, T):
+        for t2 in range(t1 + 3, T + 1, 2):
+            M = gp.quicksum(rc[f"{s}_{t1}_{t2}"] for s in keys)
+            m.addConstr(pa[f"{t1}_{t2}"] <= pa[f"{t1 + 1}_{t2 - 1}"], name=f"constraint_pa1_{t1}_{t2}")
+            m.addConstr(pa[f"{t1}_{t2}"] <= M, name=f"constraint_pa2_{t1}_{t2}")
+            m.addConstr(pa[f"{t1}_{t2}"] >= pa[f"{t1 + 1}_{t2 - 1}"] + M - 1, name=f"constraint_pa3_{t1}_{t2}")
+
+    # Constraint 7: Super consecutive sequence and palindrome linkage
+    for t1 in range(1, T):
+        for t2 in range(t1 + 1, T + 1):
+            for s in keys:
+                i, j, d = s.split("_")
+                i, j = int(i), int(j)
+                if d == "0":
+                    super_keys = [f"{i}_{k}_1" for k in range(j, segment_num + 1)]
+                else:
+                    super_keys = [f"{k}_{j}_0" for k in range(1, i + 1)]
+                super_count = gp.quicksum(cs[f"{sk}_{t1}"] for sk in super_keys)
+                m.addConstr(sc[f"{s}_{t1}_{t2}"] <= super_count, name=f"constraint_sc1_{s}_{t1}_{t2}")
+                m.addConstr(sc[f"{s}_{t1}_{t2}"] <= pa[f"{t1}_{t2}"], name=f"constraint_sc2_{s}_{t1}_{t2}")
+                m.addConstr(sc[f"{s}_{t1}_{t2}"] >= super_count + pa[f"{t1}_{t2}"] - 1, name=f"constraint_sc3_{s}_{t1}_{t2}")
+
+    # Constraint 8: cs at t2 must be supported by some sc from earlier t1
+    for t2 in range(2, T + 1):
+        for s in keys:
+            total_sc = gp.quicksum(sc[f"{s}_{t1}_{t2}"] for t1 in range(1, t2))
+            m.addConstr(cs[f"{s}_{t2}"] <= total_sc, name=f"constraint_cs_sc_{s}_{t2}")
+
+    # Optimize and collect solution pool
+    m.optimize()
+
+    if m.Status not in [GRB.OPTIMAL, GRB.INTERRUPTED, GRB.TIME_LIMIT]:
+        # Return empty if infeasible/unbounded etc.
+        return [], None
+
+    # Best objective value in the pool
+    obj_value = m.ObjVal
+
+    # Iterate through solutions in the pool
+    n_solutions = m.SolCount
+    solutions = []
+
+    # Helper to build BFB string from a solution number
+    def extract_BFB_string(solution_number):
+        # Switch to specific solution in the pool
+        m.Params.SolutionNumber = solution_number
+        # Collect cs vars equal to 1 in this solution
+        consecutive_sequences = []
+        for v in m.getVars():
+            if v.VarName.startswith("cs_"):
+                # Xn is the value in the nth solution of the pool
+                if v.Xn > 0.5:
+                    # Parse name cs_i_j_d_t
+                    _, payload = v.VarName.split("cs_")
+                    i, j, d, t = payload.split("_")
+                    consecutive_sequences.append((int(i), int(j), int(d), int(t)))
+        # Sort by time t
+        consecutive_sequences.sort(key=lambda x: x[3])
+        # Build BFB string
+        BFB_string = []
+        for (i, j, d, _) in consecutive_sequences:
+            if d == 0:
+                segment = list(range(i, j + 1))
+            else:
+                segment = [-x for x in range(j, i - 1, -1)]
+            BFB_string += segment
+        return BFB_string
+
+    # Collect only solutions with optimal objective value
+    # PoolObjVal gives the objective of the current solution in the pool
+    BFB_strings = set()
+    for si in range(n_solutions):
+        m.Params.SolutionNumber = si
+        pool_obj = m.PoolObjVal
+        # Keep only optimal solutions (exact match)
+        if abs(pool_obj - obj_value) < 1e-9:
+            BFB_list = extract_BFB_string(si)
+            BFB_string = print_BFB_string(BFB_list, print_to_console=False)
+            if BFB_string not in BFB_strings:
+                solutions.append(BFB_list)
+                BFB_strings.add(BFB_string)
+
+    return solutions, obj_value
+
 def check_BFB_string(string):
     if len(string) == 0:
         return False
@@ -201,7 +428,7 @@ def is_palindrome(sequence):
         i += 1
     return True
 
-def print_BFB_string(BFB_string):
+def print_BFB_string(BFB_string, print_to_console=True):
     sequence = []
     for segment in BFB_string:
         if segment > 0:
@@ -210,7 +437,8 @@ def print_BFB_string(BFB_string):
             # sequence += str(-segment) + '\u0305 '
             sequence.append(str(-segment) + '-')
     string = ','.join(sequence)
-    print(string)
+    if print_to_console:
+        print(string)
     return string
 
 if __name__ == '__main__':
@@ -236,24 +464,24 @@ if __name__ == '__main__':
     R = [0, 1, 2]
     
     start = 1
-    C = [1, 7, 5, 3]
-    L = [0, 3, 0, 0]
-    R = [0, 1, 1, 1]
-
-    start = 1
     C = [1, 6, 8, 2]
     L = [0, 2, 1, 0]
     R = [0, 0, 3, 1]
 
     # examples with errors
+    # start = 1
+    # C = [1, 7, 5, 3]
+    # L = [0, 3, 0, 0]
+    # R = [0, 1, 1, 1]
+
     start = 1
     # C = [8, 6, 14, 34, 26, 23]
     # L = [3, 0, 0, 10, 0, 1]
     # R = [0, 0, 0, 5, 0, 12]
 
-    C = [2, 6, 11, 13, 9, 3]
-    L = [0, 2, 3, 0, 0, 0]
-    R = [0, 0, 0, 1, 3, 1]
+    # C = [2, 6, 11, 13, 9, 3]
+    # L = [0, 2, 3, 0, 0, 0]
+    # R = [0, 0, 0, 1, 3, 1]
 
     # C = [11, 9, 11, 5]
     # L = [4, 0, 0, 0]
@@ -267,21 +495,29 @@ if __name__ == '__main__':
     # L = [18, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
     # R = [0, 0, 0, 0, 0, 1, 0, 0, 0, 12, 4, 0, 0, 2, 0]
 
-    C = [0,2,2,0,2,1]
-    L = [0,0,0,0,0,0]
-    R = [0,0,1,0,0,0]
+    C = [0, 2, 2, 0, 2, 1]
+    L = [0, 0, 0, 0, 0, 0]
+    R = [0, 0, 1, 0, 0, 0]
 
-    # start = -5
-    # C = [5, 8, 9, 10, 9] 
-    # L = [0, 0, 0, 0, 0]
-    # R = [0, 0, 0, 0, 1]
+    start = -5
+    C = [5, 8, 9, 10, 9] 
+    L = [0, 0, 0, 0, 0]
+    R = [0, 0, 0, 0, 1]
 
-    # start = -8
-    # C = [6, 7, 6, 7, 11, 13, 9, 3]
-    # L = [2, 0, 0, 0, 3, 0, 0, 0]
-    # R = [0, 0, 0, 0, 0, 1, 3, 1]
+    start = -8
+    C = [6, 7, 6, 7, 11, 13, 9, 3]
+    L = [2, 0, 0, 0, 3, 0, 0, 0]
+    R = [0, 0, 0, 0, 0, 1, 3, 1]
 
-    BFB_string, obj_val = reconstruct_BFB_string(C, L, R, start, max_time=None, max_threads=12)
-    print('Output:', obj_val, BFB_string)
-    print('BFB' if check_BFB_string(BFB_string) else 'Not BFB')
-    print_BFB_string(BFB_string)
+    # BFB_string, obj_val = reconstruct_BFB_string(C, L, R, start, max_time=None, max_threads=12)
+    # print('ILP objective value:', obj_val)
+    # print('ILP output string', BFB_string)
+    # print('BFB' if check_BFB_string(BFB_string) else 'Not BFB')
+    # print_BFB_string(BFB_string)
+
+    BFB_strings, obj_val = reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=12, pool_solutions=50)
+    print('Gurobi objective value:', obj_val)
+    for idx, BFB_string in enumerate(BFB_strings):
+        print(f'Gurobi output string {idx+1}:', BFB_string)
+        print('BFB' if check_BFB_string(BFB_string) else 'Not BFB')
+        print_BFB_string(BFB_string)

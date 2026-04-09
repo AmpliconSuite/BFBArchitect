@@ -1,4 +1,5 @@
 import argparse
+import re
 import time
 import pandas as pd
 import pysam
@@ -7,18 +8,20 @@ from pathlib import Path
 
 try:
     from src.SVCaller import call_SVs
-    from src.BFBSolver import reconstruct_BFB_string, check_BFB_string, print_BFB_string
-    from src.datatypes import CHR_CENTRO
+    from src.BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
+    from src.datatypes import CHR_CENTRO, CHR_SIZES
     from src.utils import create_logger
 except:
     from SVCaller import call_SVs
-    from BFBSolver import reconstruct_BFB_string, check_BFB_string, print_BFB_string
-    from datatypes import CHR_CENTRO
+    from BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
+    from datatypes import CHR_CENTRO, CHR_SIZES
     from utils import create_logger
 
 def get_normal_coverage(cns_fn, bam_fn):
     # Get normal genome regions
     cns = pd.read_csv(cns_fn, sep="\t")
+    sex_chr = re.compile(r"^(chr)?[XY]$", re.IGNORECASE)
+    cns = cns[~cns.chromosome.apply(lambda x: bool(sex_chr.match(x)))]
     segments = cns.sort_values(by='log2').reset_index(drop=True) # sort all segments by log2
     l = int(len(segments) / 2.4)
     r = l + 1
@@ -56,6 +59,26 @@ def get_coverage_and_rc(bam_fn, intervals, qc_threshold=0):
                 total_bases += min(block_end, end) - max(block_start, start)
     coverage = total_bases / total_length
     return (coverage, read_count)
+
+def expand_region(bam_fn, normal_cov, region, CN_threshold=2, size=100000):
+    chrom, start, end = region
+    if end <= CHR_CENTRO[chrom]:
+        left_bound, right_bound = 0, CHR_CENTRO[chrom]
+    else:
+        left_bound, right_bound = CHR_CENTRO[chrom], CHR_SIZES[chrom]
+    left = start
+    while left-size >= left_bound and start - left < 100*size:
+        coverage, _ = get_coverage_and_rc(bam_fn, [(chrom, left-size, left)])
+        if round(coverage * 2 / normal_cov - 1) <= CN_threshold:
+            break
+        left -= size
+    right = end
+    while right+size <= right_bound and right - end < 100*size:
+        coverage, _ = get_coverage_and_rc(bam_fn, [(chrom, right, right+size)])
+        if round(coverage * 2 / normal_cov - 1) <= CN_threshold:
+            break
+        right += size
+    return (chrom, left, right)
 
 def segmentation(cns_fn, bam_fn, regions, SVs, normal_cov, bkp_distance=50000, tolerance=0.1, CNV_segmentation=False):
     # Get SV breakpoints in the BFB regions and extra regions
@@ -100,14 +123,14 @@ def segmentation(cns_fn, bam_fn, regions, SVs, normal_cov, bkp_distance=50000, t
     cns = pd.read_csv(cns_fn, sep="\t")
     for (chrom, start, end) in regions + extra_regions:
         # Find segment boundaries
-        is_BFB_region = (chrom, start, end) in regions
+        is_BFB_region = (chrom, start, end) in regions[:1]
         bkps = SV_breakpoints.get(chrom if is_BFB_region else chrom+'_extra', [])
         cns_region = cns[(cns.chromosome == chrom) & (start <= cns.start) & (cns.end <= end)]
         CNV_boundaries = []
         if len(cns_region) > 0:
             CNV_boundaries = cns_region['start'].values.tolist()
             CNV_boundaries.append(int(cns_region.iloc[-1]['end']))
-            CNV_boundaries = list(list(filter(lambda b: (b in bkps or -b in bkps) == False, CNV_boundaries)))
+            CNV_boundaries = list(filter(lambda b: (b in bkps or -b in bkps) == False, CNV_boundaries))
         if CNV_segmentation:
             boundaries = list(set(CNV_boundaries + bkps + [start, end]))
         else:
@@ -181,13 +204,11 @@ def segmentation(cns_fn, bam_fn, regions, SVs, normal_cov, bkp_distance=50000, t
             extra_segments += segment_list
     return segments, extra_segments
 
-def compute_BFB_scores(coverage, normal_cov, cn0, lf0, rf0, BFB_palindromes, multiplicity, logger, is_BFB_string=False):
+def compute_BFB_scores(coverage, normal_cov, cn0, lf0, rf0, BFB_strings, multiplicity, logger):
     scores = []
-    for BFB_palindrome in BFB_palindromes:
-        if is_BFB_string == False:
-            BFB_string = BFB_palindrome[:len(BFB_palindrome)//2]
-        else:
-            BFB_string = BFB_palindrome
+    for idx, BFB_string in enumerate(BFB_strings):
+        logger.info('----------------------------------------')
+        logger.info(f'Scores for BFB string {idx+1}')
         # Discrepency between observed and predicted CN
         cn = [0 for _ in range(len(cn0))]
         lf = [0 for _ in range(len(lf0))]
@@ -206,28 +227,33 @@ def compute_BFB_scores(coverage, normal_cov, cn0, lf0, rf0, BFB_palindromes, mul
         rf = [c * multiplicity for c in rf]
 
         CN_score = sum([abs(cn0[i]-cn[i])/cn[i] for i in range(len(cn))])
-        logger.info(f'CN discrepancy: {CN_score}')
-        alpha = 1
-        fb_dist = alpha * sum([(lf0[i]-lf[i])**2 + (rf0[i]-rf[i])**2 for i in range(len(cn0))])**0.5 / len(cn0)
-        logger.info(f'Foldback Euclidean distance: {fb_dist}')
-        fb_score = 0
-        beta = 0.5
+        if normal_cov < 7:
+            CN_score *= 0.5
+            logger.info(f'CN discrepancy (weight = 0.5 due to normal coverage < 7): {CN_score}')
+        else:
+            logger.info(f'CN discrepancy: {CN_score}')
+        fb_dist = sum([(lf0[i]-lf[i])**2 + (rf0[i]-rf[i])**2 for i in range(len(cn0))])**0.5 / len(cn0)
+        if normal_cov < 7:
+            fb_dist *= 0.3
+            logger.info(f'Foldback Euclidean distance (weight = 0.3 due to normal coverage < 7): {fb_dist}')
+        else:
+            logger.info(f'Foldback Euclidean distance: {fb_dist}')
+        missing_fb_score = 0
         for i in range(len(cn0)):
             if (lf0[i] == 0 and lf[i] != 0):
-                fb_score += beta * lf[i]
+                missing_fb_score += 0.5 * lf[i]
             if (rf0[i] == 0 and rf[i] != 0):
-                fb_score += beta * rf[i]
-        # fb_score /= len(cn0)
+                missing_fb_score += 0.5 * rf[i]
         # fb_count = sum([1 for i in range(len(cn0)) if (lf0[i] > 0 or rf0[i] > 0)])
         fb_count = sum([1 for i in range(len(lf0)) if lf0[i] > 0]) + sum([1 for i in range(len(rf0)) if rf0[i] > 0])
         if fb_count < 2 or len(cn0) < 2:
-            fb_score += 2
-        logger.info(f'Foldback score: {fb_score}')
-        gamma = 1 / len(cn0)
-        nanopore_score = gamma * sum([abs(2*coverage[i]/normal_cov-1-cn0[i])/cn0[i] for i in range(len(cn0)) if cn0[i] > 0])
+            missing_fb_score += 2
+        logger.info(f'Missing foldback score: {missing_fb_score}')
+        nanopore_score = sum([abs(2*coverage[i]/normal_cov-1-cn0[i])/cn0[i] for i in range(len(cn0)) if cn0[i] > 0])
+        # nanopore_score = sum([abs(2*coverage[i]/normal_cov-cn0[i])/cn0[i] for i in range(len(cn0)) if cn0[i] > 0]) # for simulation
         logger.info(f'Nanopore score: {nanopore_score}')
-        score = CN_score + fb_dist + fb_score + nanopore_score
-        logger.info(f'Final score: {score}')
+        score = CN_score + fb_dist + missing_fb_score + nanopore_score
+        logger.info(f'Total score: {score}')
         scores.append(score)
     return scores
 
@@ -238,6 +264,7 @@ def generate_graph_file(output_fn, bam_fn, segments, extra_segments, coverage_an
     out_file = open(output_fn, 'w')
     out_file.write('SequenceEdge: StartPosition, EndPosition, PredictedCN, AverageCoverage, Size, NumberOfLongReads\n')
     segment_cn = [max(0, round(2*c/normal_cov)-1) for (c, _) in coverage_and_rc]
+    # segment_cn = [max(0, round(2*c/normal_cov)) for (c, _) in coverage_and_rc] # for simulation
     for i, seg in enumerate(all_segments):
         size = seg[2] - seg[1] + 1
         coverage, read_count = coverage_and_rc[i]
@@ -258,7 +285,7 @@ def generate_graph_file(output_fn, bam_fn, segments, extra_segments, coverage_an
         out_file.write(entry)
     out_file.close()
 
-def generate_cycle_file(output_fn, segments, BFB_palindromes, scores, multiplicity, is_BFB_string=False):
+def generate_cycle_file(output_fn, segments, BFB_strings, scores, multiplicity):
     # Find all intervals in the BFB amplicon
     intervals = []
     (chr, start, end) = segments[0]
@@ -280,16 +307,15 @@ def generate_cycle_file(output_fn, segments, BFB_palindromes, scores, multiplici
         (chr, start, end) = segment
         out_file.write(f'Segment	{i+1}	{chr}	{start}	{end}\n')
     out_file.write('List of longest subpath constraints\n')
-    for i, BFB_palindrome in enumerate(BFB_palindromes):
-        if check_BFB_string(BFB_palindrome) == False:
-            print('Non-BFB sequence:')
-            print_BFB_string(BFB_palindrome)
+    for i, BFB_string in enumerate(BFB_strings):
+        if check_BFB_string(BFB_string) == False:
+            print('Non-BFB string:')
+            print_BFB_string(BFB_string)
             continue
         else:
-            print('BFB sequence saved to cycles.txt file:')
-            print_BFB_string(BFB_palindrome)
+            print(f'BFB string {i+1} saved to cycles.txt file:')
+            print_BFB_string(BFB_string)
         path = []
-        BFB_string = BFB_palindrome[:len(BFB_palindrome)//2] if is_BFB_string == False else BFB_palindrome
         for seg in BFB_string:
             if seg > 0:
                 path.append(f'{seg}+')
@@ -307,20 +333,32 @@ def main():
     parser.add_argument("--segmentation", help="Consider CNV in segmentation", action='store_true')
     parser.add_argument("--deletion", help="Deletion handling", action='store_true')
     parser.add_argument("--coverage", help="Sequencing coverage (if provided, estimation from cns will be skipped)", type=float, default=None)
+    parser.add_argument("--multiple", help="Reconstruct multiple BFB candidates", action='store_true')
+    parser.add_argument("--no_expansion", help="Keep the specified region without expansion", action='store_true')
+    parser.add_argument("--min_sv_cn", type=float, default=0.75, help="Minimum copy number for SV calling (default: 0.75)")
+    parser.add_argument("--min_mapq", type=int, default=20, help="Minimum mapping quality for SV calling (default: 20)")
     args = parser.parse_args()
 
     logger = create_logger('BFBArchitect', f'{args.output_prefix}.log')
     start_time = time.time()
     logger.info(f'Command: python {Path(__file__).resolve()} --bam {args.bam} --cns {args.cns} --regions {args.regions} --output_prefix {args.output_prefix}' +
-                 (' --segmentation' if args.segmentation else '') + (' --deletion' if args.deletion else '') + (' --coverage ' + str(args.coverage) if args.coverage != None else ''))
+                 (' --segmentation' if args.segmentation else '') + (' --deletion' if args.deletion else '') + (' --coverage ' + str(args.coverage) if args.coverage != None else '') + 
+                 (' --multiple' if args.multiple else '') + (' --no_expansion' if args.no_expansion else '') + (f' --min_sv_cn {args.min_sv_cn}' if args.min_sv_cn != 0.75 else '') + 
+                 (f' --min_mapq {args.min_mapq}' if args.min_mapq != 20 else ''))
     normal_cov = get_normal_coverage(args.cns, args.bam) if args.coverage == None else args.coverage
     logger.info(f'Normal coverage: {normal_cov}')
+    logger.info(f'Minimum copy number for SV calling: {args.min_sv_cn}')
+    logger.info(f'Minimum number of supporting reads for SV calling: {args.min_sv_cn * normal_cov / 2}')
     regions = [] # regions = [('chr11', 70000000, 75000000), ('chr17', 40000001, 43000001)]
     for info in args.regions.split(';'):
         chrom = info.split(':')[0]
+        # CHR_CENTRO[chrom] = 0 # for simulation
         start = int(info.split(':')[1].split('-')[0])
         end = int(info.split('-')[1])
-        regions.append((chrom, start, end))
+        region = (chrom, start, end)
+        if args.no_expansion == False:
+            region = expand_region(args.bam, normal_cov, (chrom, start, end))
+        regions.append(region)
     # Call SVs from amplicon regions
     print("Calling SVs in the amplicon regions...")
     SVs = {}
@@ -329,7 +367,7 @@ def main():
         output_file = open(output_read_fn, 'w')
         output_file.close()
     for region in regions:
-        SV_dict = call_SVs(args.bam, region, normal_cov=normal_cov, output_fn=output_read_fn)
+        SV_dict = call_SVs(args.bam, region, min_mapq=args.min_mapq, normal_cov=normal_cov, output_fn=output_read_fn, min_cn = args.min_sv_cn)
         SVs.update(SV_dict)
     print(f'Saved structural variants to {args.output_prefix}_reads.txt.')
     foldback_flag = False
@@ -346,6 +384,7 @@ def main():
     # CNV calling 
     coverage_and_rc = [get_coverage_and_rc(args.bam, [segment]) for segment in segments]
     cn = [max(0, round(2*c/normal_cov)-1) for (c, _) in coverage_and_rc]
+    # cn = [max(0, round(2*c/normal_cov)) for (c, _) in coverage_and_rc] # for simulation
     # Restimate segment CN based on deletions
     if args.deletion:
         print("Handling deletions...")
@@ -366,7 +405,10 @@ def main():
             if missing_bases > 0:
                 segment_length = end - start + 1 # - deletion_length
                 coverage_and_rc[i] = ((segment_length * coverage_and_rc[i][0] + missing_bases) / (segment_length), coverage_and_rc[i][1])
+                # if segment_length - deletion_length > 0:
+                    # coverage_and_rc[i] = ((segment_length * coverage_and_rc[i][0]) / (segment_length - deletion_length), coverage_and_rc[i][1])
                 cn[i] = round(coverage_and_rc[i][0] * 2 / normal_cov) - 1
+                # cn[i] = round(coverage_and_rc[i][0] * 2 / normal_cov) # for simulation
     # Get vectors for CN, left foldbacks, and right foldbacks
     l_bp, r_bp = [bp1 for (_, bp1, _) in segments], [bp2 for (_, _, bp2) in segments]
     lf, rf = [0 for _ in range(len(cn))], [0 for _ in range(len(cn))]
@@ -384,7 +426,8 @@ def main():
     max_pos = max(l_bp + r_bp)
     start_segment = -len(segments) if max_pos < CHR_CENTRO[chrom] else 1
     multiplicity = 1
-    while max(cn) / multiplicity > 12:
+    cn_bound = 15 if args.multiple else 12
+    while max(cn)/multiplicity > cn_bound or (sum(lf0) + sum(rf0) + 1)/multiplicity > cn_bound:
         multiplicity += 1
     logger.info(f'Start segment: {start_segment}')
     logger.info(f'cn0: {cn0}')
@@ -398,16 +441,20 @@ def main():
     rf = [c / multiplicity for c in rf]
     
     print("Reconstructing BFB sequences using ILP...")
-    BFB_string, obj_val = reconstruct_BFB_string(cn, lf, rf, start_segment)
+    if args.multiple:
+        BFB_strings, obj_val = reconstruct_BFB_strings(cn, lf, rf, start_segment)
+    else:
+        BFB_string, obj_val = reconstruct_BFB_string(cn, lf, rf, start_segment)
+        BFB_strings = [BFB_string]
     print("BFB reconstruction completed.")
 
     logger.info(f'ILP objective value: {obj_val}')
     coverage = [c for (c, _) in coverage_and_rc]
-    scores = compute_BFB_scores(coverage, normal_cov, cn0, lf0, rf0, [BFB_string], multiplicity, logger, is_BFB_string=True)
+    scores = compute_BFB_scores(coverage, normal_cov, cn0, lf0, rf0, BFB_strings, multiplicity, logger)
     if args.output_prefix != None:
         generate_graph_file(f'{args.output_prefix}_graph.txt', args.bam, segments, extra_segments, coverage_and_rc, SVs, normal_cov)
         print(f'Generated {args.output_prefix}_graph.txt file.')
-        generate_cycle_file(f'{args.output_prefix}_cycles.txt', segments+extra_segments, [BFB_string], scores, multiplicity, is_BFB_string=True)
+        generate_cycle_file(f'{args.output_prefix}_cycles.txt', segments+extra_segments, BFB_strings, scores, multiplicity)
         print(f'Generated {args.output_prefix}_cycles.txt file.')
     logger.info(f'Total time: {time.time() - start_time} seconds')
 

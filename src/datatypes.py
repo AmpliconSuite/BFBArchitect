@@ -162,7 +162,7 @@ class SV:
     
     def is_in_regions(self, regions: list[tuple[str, int, int]], flanking_length=1000000) -> bool:
         flag1, flag2 = False, False
-        for (chrom, start, end) in regions:
+        for (chrom, start, end) in regions[:1]:
             if self.chrom1 == chrom and start-flanking_length <= self.bp1 <= end+flanking_length:
                 flag1 = True
             if self.chrom2 == chrom and start-flanking_length <= self.bp2 <= end+flanking_length:

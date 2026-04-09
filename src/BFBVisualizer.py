@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import argparse
 import pandas as pd
 from pathlib import Path
+import hashlib
 
 try:
     from src.datatypes import SV, CHR_CENTRO
@@ -22,10 +23,12 @@ parser.add_argument("-cnr", "--cnr", help="cnr dir", required=True)
 parser.add_argument("-o", "--output_prefix", help="Output_dir", required=True)
 parser.add_argument("-d", "--deletion", help="Deletion, e.g., \"1,10000\"")
 parser.add_argument("-pdf", "--pdf", action='store_true', help="Output pdf format")
+parser.add_argument("-g", "--gene", help="Gene annotation", default=None)
 args = parser.parse_args()
 
 logger = create_logger('BFBVisualizer', f'{args.output_prefix}_visualization.log')
-logger.info(f'Command: python {Path(__file__).resolve()} --graph {args.graph} --cycle {args.cycle} --cnr {args.cnr} --output_prefix {args.output_prefix}' + (f' --deletion {args.deletion}' if args.deletion else ''))
+logger.info(f'Command: python {Path(__file__).resolve()} --graph {args.graph} --cycle {args.cycle} --cnr {args.cnr} --output_prefix {args.output_prefix}' + (f' --deletion {args.deletion}' if args.deletion else '')
+            + (f' --gene {args.gene}' if args.gene else '') + (f' --pdf' if args.pdf else ''))
 
 def parse_segment_coordinates(file_dir, seg_num):
     segments_coordinates = {}
@@ -53,7 +56,7 @@ def parse_scores(file_dir):
     ans, seg_num = [], 0
     with open(file_dir, 'r') as f: 
         for line in f:
-            if len(ans) >= 5:
+            if len(ans) >= 1:
                 break
             if line.startswith('Path'):
                 # create a dictionary to store line information
@@ -62,14 +65,11 @@ def parse_scores(file_dir):
                     key, value = item.split('=')
                     info[key] = value
                 final_score = info['Score']
-                CN_score = 1.0
-                FN_score = 1.0
-                SN_score = 1.0
                 structure = ''
                 for seg in info['Segments'].split(','):
                     structure += chr(ord('A') + int(seg[:-1]) - 1)
                     seg_num = max(seg_num, abs(int(seg[:-1])))
-                scores = {'Structure':structure,'Multiplicity':info.get('Multiplicity', 1),'Final_score':final_score,'CN_score':CN_score,'FN_score':FN_score,'SN_score':SN_score }
+                scores = {'Structure':structure,'Multiplicity':info.get('Multiplicity', 1),'Final_score':final_score}
                 ans.append(scores)
     return ans, seg_num
 
@@ -165,6 +165,42 @@ def plot_segments(segments_coordinates):
             x2 = segments_coordinates[s]['start']
             y1 = segments_coordinates[s]['cn']
             ax.vlines(ymin =min(y1,y2),ymax = max(y1,y2), x = x1,alpha=0.7,color='black', linewidth=1)
+
+def plot_genes(gene_annotation, chrom, start, end, max_y):
+    # read genes from gtf file
+    oncogenes = dict()
+    fp = open(gene_annotation, 'r')
+    for line in fp:
+        s = line.strip().split('\t')
+        if "chr" not in s[0]:
+            s[0] = "chr" + s[0]
+        if s[0] != chrom:
+            continue
+        gene_start, gene_end = int(s[3]), int(s[4])
+        if gene_end < start or gene_start > end:
+            continue
+        gene_name = ""
+        for token in s[-1].split(';'):
+            if "Name" in token:
+                gene_name = token[5:]
+                break
+            if "gene_name" in token:
+                gene_name = token.strip()[11:-1]
+                break
+        if gene_name not in oncogenes:
+            oncogenes[gene_name] = [gene_start, gene_end, s[6]]
+        else:
+            oncogenes[gene_name][0] = min(gene_start, oncogenes[gene_name][0])
+            oncogenes[gene_name][1] = max(gene_end, oncogenes[gene_name][1])
+    fp.close()
+    # plot genes
+    gene_colors = dict()
+    for gene in oncogenes.keys():
+        color = str(hashlib.sha1(gene.encode('utf-8')).hexdigest())[-6:]
+        gene_colors[gene] = f'#{color}'
+    for gene_name, (gene_start, gene_end, _) in oncogenes.items():
+        ax.hlines(y = max_y*1.15, xmin = gene_start, xmax = gene_end, color=gene_colors[gene_name], linewidth=2)
+        ax.annotate(gene_name, xy=((gene_start + gene_end)/2, max_y*1.16), ha='center', fontsize=6, color=gene_colors[gene_name])
 
 def plot_foldbacks(foldbacks_coordinate,max_y,max_x,start_x):
     prop = dict(arrowstyle="-|>,head_width=0.1,head_length=0.17",
@@ -279,7 +315,7 @@ def plot_structure(score, segments_coordinates, arm,max_y,max_x, foldbacks):
                 ax.annotate("", xy=(segments_coordinates[s]['start'],y + (rectangle_width/2) * max_y), xytext=(segments_coordinates[s]['start'] - arrow_length,y + (rectangle_width/2) * max_y), arrowprops=prop)
     ax.annotate('x'+str(score['Multiplicity']), xy = (ax.get_xlim()[1]-0.08*max_x, 0.90*ax.get_ylim()[1]),weight = 'bold',ha = 'center')
 all_scores, seg_num = parse_scores(args.cycle)
-# seg_num = 2
+
 segments_coordinates = parse_segment_coordinates(args.graph, seg_num)
 reconstructed_structure = ''
 chrom , start , end = detect_start_end(segments_coordinates)
@@ -304,6 +340,8 @@ for index_1, scores in enumerate(all_scores):
         ax.add_patch(rect)
         
     plot_segments(segments_coordinates)
+    if args.gene is not None:
+        plot_genes(args.gene, chrom, start, end, max(y))
     plot_foldbacks(foldbacks_coordinate,max(y),max(x)-min(x), min(x))
     plot_structure(scores, segments_coordinates,arm,max(y),max(x)-min(x),foldbacks_coordinate)
     plt.xlabel('Position', fontsize=16)
