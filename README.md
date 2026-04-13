@@ -26,23 +26,30 @@ BFBArchitect can be installed and run on most modern Unix-like operating systems
     ```
     pip install .
     ```
+4. Recommended for efficient ILP solving: Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license))
+   * Place the ```gurobi.lic``` file in ```$HOME/gurobi.lic```.
+   
 
 ## Running
 Before running BFBArchitect, genome-wide copy number (CN) calls must be generated from the aligned long-read data by running the follow script:
 ```
-/path/to/BFBArchitect/scripts/call_cnvs.sh <input.bam> /path/to/BFBArchitect/scripts/hg38full_ref_5k.cnn <output_dir>
+python /path/to/BFBArchitect/scripts/call_CNV.py <input.bam> /path/to/BFBArchitect/scripts/hg38full_ref_5k.cnn <output_dir> <threads>
 ```
 This will create a file called ```[input].cns```, which is a required argument in BFBArchitect. 
 
 Then run BFBArchitect to reconstruct potential BFB sequences for any genomic region ```chrom:start-end``` with copy number amplification. (The amplicon region can be detected by standard pipelines like [CoRAL](https://github.com/AmpliconSuite/CoRAL).)
 ### Usage
 ```
-python /path/to/BFBArchitect.py --bam <input.bam> --cns <input.cns> --regions <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
+python /path/to/BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
+```
+BFBArchitect also supports reconstructing BFB sequences at the whole-genome level, given CoRAL results at ```CoRAL_output_directory```: 
+```
+python /path/to/BFBArchitect/scripts/batch_run.py --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
 ```
 ### Required arguments
 - --bam <.bam file>: Aligned long reads
 - --cns <.cns file>: The .cns file from genome-wide copy number calling
-- --regions <string>: A string that represents the amplified genomic region (e.g. chr1:1-1000000)
+- --region <string>: A string that represents the amplified genomic region (e.g. chr1:1-1000000)
 - --output_prefix <string>: The directory and prefix for all output files
 ### Optional arguments
 - --segmentation: Consider copy number variation when segmenting the amplicon region. 
@@ -58,7 +65,7 @@ python /path/to/BFBArchitect.py --bam <input.bam> --cns <input.cns> --regions <c
 Please download the sample input from this [link](https://drive.google.com/file/d/1OVAKD8kiH3vK9e2hE6YecMIoAulS_oId/view?usp=sharing), 
 which includes sample.sorted.bam, sample.sorted.cns, and sample.sorted.cnr (for visualization). Run the following command:
 ```
-python /path/to/BFBArchitect/src/BFBArchitect.py --bam BFBArchitect_input/sample.sorted.bam --cns BFBArchitect_input/sample.sorted.cns --regions chr7:120000000-125000000 --output_prefix sample --coverage 15.0
+python /path/to/BFBArchitect/src/BFBArchitect.py --bam BFBArchitect_input/sample.sorted.bam --cns BFBArchitect_input/sample.sorted.cns --region chr7:120000000-125000000 --output_prefix sample --coverage 15.0
 ```
 The following files will be output:
 1. [sample_graph.txt](https://github.com/AmpliconSuite/BFBArchitect/blob/main/sample/sample_graph.txt)

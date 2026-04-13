@@ -1,3 +1,5 @@
+from asyncio.log import logger
+
 import matplotlib.pyplot as plt
 import argparse
 import pandas as pd
@@ -16,19 +18,6 @@ font = {'family' : 'Arial',
 plt.rc('font', **font)
 plt.rcParams['pdf.fonttype'] = 42
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-graph", "--graph", help="graph.txt dir", required=True)
-parser.add_argument("-cycle", "--cycle", help="cycles.txt dir", required=True)
-parser.add_argument("-cnr", "--cnr", help="cnr dir", required=True)
-parser.add_argument("-o", "--output_prefix", help="Output_dir", required=True)
-parser.add_argument("-d", "--deletion", help="Deletion, e.g., \"1,10000\"")
-parser.add_argument("-pdf", "--pdf", action='store_true', help="Output pdf format")
-parser.add_argument("-g", "--gene", help="Gene annotation", default=None)
-args = parser.parse_args()
-
-logger = create_logger('BFBVisualizer', f'{args.output_prefix}_visualization.log')
-logger.info(f'Command: python {Path(__file__).resolve()} --graph {args.graph} --cycle {args.cycle} --cnr {args.cnr} --output_prefix {args.output_prefix}' + (f' --deletion {args.deletion}' if args.deletion else '')
-            + (f' --gene {args.gene}' if args.gene else '') + (f' --pdf' if args.pdf else ''))
 
 def parse_segment_coordinates(file_dir, seg_num):
     segments_coordinates = {}
@@ -52,11 +41,11 @@ def parse_segment_coordinates(file_dir, seg_num):
                     break
     return segments_coordinates
 
-def parse_scores(file_dir):
+def parse_scores(file_dir, multiple = False):
     ans, seg_num = [], 0
     with open(file_dir, 'r') as f: 
         for line in f:
-            if len(ans) >= 1:
+            if len(ans) >= 1 and multiple == False:
                 break
             if line.startswith('Path'):
                 # create a dictionary to store line information
@@ -144,7 +133,7 @@ def extract_fcna(cnr_fn, chrom, start, end):
         y.append(2**row.log2*2-1)
     return x, x_ranges, y
 
-def plot_segments(segments_coordinates):
+def plot_segments(ax, segments_coordinates):
     try:
         d = args.deletion.split(',')
         deletion_start, deletion_end = int(d[0]), int(d[1])
@@ -166,7 +155,7 @@ def plot_segments(segments_coordinates):
             y1 = segments_coordinates[s]['cn']
             ax.vlines(ymin =min(y1,y2),ymax = max(y1,y2), x = x1,alpha=0.7,color='black', linewidth=1)
 
-def plot_genes(gene_annotation, chrom, start, end, max_y):
+def plot_genes(ax, gene_annotation, chrom, start, end, max_y):
     # read genes from gtf file
     oncogenes = dict()
     fp = open(gene_annotation, 'r')
@@ -202,7 +191,7 @@ def plot_genes(gene_annotation, chrom, start, end, max_y):
         ax.hlines(y = max_y*1.15, xmin = gene_start, xmax = gene_end, color=gene_colors[gene_name], linewidth=2)
         ax.annotate(gene_name, xy=((gene_start + gene_end)/2, max_y*1.16), ha='center', fontsize=6, color=gene_colors[gene_name])
 
-def plot_foldbacks(foldbacks_coordinate,max_y,max_x,start_x):
+def plot_foldbacks(ax, foldbacks_coordinate,max_y,max_x,start_x):
     prop = dict(arrowstyle="-|>,head_width=0.1,head_length=0.17",
             shrinkA=0,shrinkB=0,color = 'darkblue',alpha = 0.7, linewidth = 0.5)
     arrow_length = 0.03 * max_x
@@ -215,7 +204,7 @@ def plot_foldbacks(foldbacks_coordinate,max_y,max_x,start_x):
             ax.annotate("", xy=(foldback['start'],max_y*1.08), xytext=(foldback['start']-arrow_length,max_y*1.08), arrowprops=prop)
             ax.annotate("", xy=(foldback['end']-arrow_length,max_y*1.13), xytext=(foldback['end'],max_y*1.13), arrowprops=prop)
 
-def plot_rectangle_plot(segments_coordinates,max_cn):
+def plot_rectangle_plot(ax, segments_coordinates,max_cn):
     for s in segments_coordinates:
         ax.add_patch(plt.Rectangle((segments_coordinates[s]['start'], 0), segments_coordinates[s]['end'] - segments_coordinates[s]['start'],
                                       - 0.07 * max(1.2 * max_cn, max_cn + 3), edgecolor='r', facecolor='none',
@@ -223,7 +212,7 @@ def plot_rectangle_plot(segments_coordinates,max_cn):
         x = 1.1 * ((segments_coordinates[s]['start'] + segments_coordinates[s]['end']) / 2)
         ax.annotate(s, xy=(x - 0.15 * (segments_coordinates[s]['end'] - segments_coordinates[s]['start']),
                                     - 0.07 * max(1.2 * max_cn, max_cn + 3)), weight="bold")
-def plot_segments_border(segments_coordinates,max_cn,max_y):
+def plot_segments_border(ax, segments_coordinates,max_cn,max_y):
     ax.vlines(ymin = 0 , ymax = max_cn, x = list(segments_coordinates.values())[0]['start'], linewidth = 1, alpha = 0.8 ,linestyle='--', color = 'gray')
     for s in segments_coordinates:
         ax.vlines(ymin = 0 , ymax = max_cn, x = segments_coordinates[s]['end'], linewidth = 1, alpha = 0.8 ,linestyle='--', color = 'gray')
@@ -236,7 +225,7 @@ def find_in_foldback(segment, direction, foldbacks):
             return True
     return False
 
-def plot_structure(score, segments_coordinates, arm,max_y,max_x, foldbacks):
+def plot_structure(ax, score, segments_coordinates, arm,max_y,max_x, foldbacks):
     try:
         d = args.deletion.split(',')
         deletion_start, deletion_end = int(d[0]), int(d[1])
@@ -314,55 +303,72 @@ def plot_structure(score, segments_coordinates, arm,max_y,max_x, foldbacks):
                 ax.plot(x_point, y_point, color=color2, alpha=0.6, linewidth=0.5, linestyle = linestyle)
                 ax.annotate("", xy=(segments_coordinates[s]['start'],y + (rectangle_width/2) * max_y), xytext=(segments_coordinates[s]['start'] - arrow_length,y + (rectangle_width/2) * max_y), arrowprops=prop)
     ax.annotate('x'+str(score['Multiplicity']), xy = (ax.get_xlim()[1]-0.08*max_x, 0.90*ax.get_ylim()[1]),weight = 'bold',ha = 'center')
-all_scores, seg_num = parse_scores(args.cycle)
 
-segments_coordinates = parse_segment_coordinates(args.graph, seg_num)
-reconstructed_structure = ''
-chrom , start , end = detect_start_end(segments_coordinates)
-foldbacks_coordinate = parse_foldback_coordinate(args.graph, segments_coordinates, chrom, start, end)
-x, x_ranges, y = extract_fcna(args.cnr, chrom, start, end)
-arm = ''
-if max(x) < CHR_CENTRO[chrom]:
-    arm = 'p'
-else:
-    arm = 'q'
-for index_1, scores in enumerate(all_scores):
-    plt.clf()
-    fig, ax = plt.subplots()
-    fig.set_size_inches(4, 3.5)
-    plt.scatter(x, y, c ="#0072b2", s= 0.1,alpha = 0.5)
-    # plt.stackplot(x, y, color='#d55e00', alpha=0.3)
-    for i in range(len(x_ranges)):
-        x_start, x_end = x_ranges[i]
-        height = y[i]
-        width = x_end - x_start
-        rect = plt.Rectangle((x_start, 0), width, height, edgecolor=None, facecolor='#d55e00', alpha=0.3)
-        ax.add_patch(rect)
-        
-    plot_segments(segments_coordinates)
-    if args.gene is not None:
-        plot_genes(args.gene, chrom, start, end, max(y))
-    plot_foldbacks(foldbacks_coordinate,max(y),max(x)-min(x), min(x))
-    plot_structure(scores, segments_coordinates,arm,max(y),max(x)-min(x),foldbacks_coordinate)
-    plt.xlabel('Position', fontsize=16)
-    plt.ylabel('Copy number', fontsize=16)
-    ylim = ax.get_ylim()
-    plt.ylim(0, ylim[1] * 1.05)
-    plot_segments_border(segments_coordinates,ax.get_ylim()[1], max(y))
-    ytcik = ax.get_yticks()
-    new_ytick = []
-    for i in ytcik:
-        if i < max(y)*1.1:
-            new_ytick.append(i)
-    plt.yticks(new_ytick)
-    ax.add_patch(plt.Rectangle((ax.get_xlim()[0], max(y)*1.04), ax.get_xlim()[1]-ax.get_xlim()[0],
-                                      0.13*max(y), edgecolor='none', facecolor='y',
-                                       alpha=0.1))
-    plt.subplots_adjust(bottom=0.15, left = 0.175)
-    plt.legend(handles=[], loc ="upper left",title="Score = {score}".format(score = round(float(scores['Final_score']), 2)),prop={'size': 4},title_fontsize=6)
-    # plt.annotate("Score = {score}".format(score = str(scores['Final_score'])[:4]),xy = (0.1,0.1),xycoords='axes fraction',fontsize=6)
-    cell_line = args.output_prefix.split('/')[-1].split('_')[0]
-    plt.title(cell_line+' '+str(chrom)+arm, fontsize=16)
-    plt.savefig(args.output_prefix+'_'+str(index_1+1)+('.pdf' if args.pdf else '.png'), dpi = 300)
-    plt.close()
-    print('Saved figure to '+args.output_prefix+'_'+str(index_1+1)+('.pdf' if args.pdf else '.png'))
+def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotation=None, deletion=None, pdf=False, multiple=False):
+    logger = create_logger('BFBVisualizer', f'{output_prefix}_visualization.log')
+    logger.info(f'Command: python {Path(__file__).resolve()} --graph {graph_file} --cycle {cycle_file} --cnr {cnr_file} --output_prefix {output_prefix}' + (f' --deletion {deletion}' if deletion else '')
+            + (f' --gene {gene_annotation}' if gene_annotation else '') + (f' --pdf' if pdf else ''))
+    all_scores, seg_num = parse_scores(cycle_file, multiple=multiple)
+    segments_coordinates = parse_segment_coordinates(graph_file, seg_num)
+    reconstructed_structure = ''
+    chrom , start , end = detect_start_end(segments_coordinates)
+    foldbacks_coordinate = parse_foldback_coordinate(graph_file, segments_coordinates, chrom, start, end)
+    x, x_ranges, y = extract_fcna(cnr_file, chrom, start, end)
+    arm = ''
+    if max(x) < CHR_CENTRO[chrom]:
+        arm = 'p'
+    else:
+        arm = 'q'
+    for index_1, scores in enumerate(all_scores):
+        plt.clf()
+        fig, ax = plt.subplots()
+        fig.set_size_inches(4, 3.5)
+        plt.scatter(x, y, c ="#0072b2", s= 0.1,alpha = 0.5)
+        # plt.stackplot(x, y, color='#d55e00', alpha=0.3)
+        for i in range(len(x_ranges)):
+            x_start, x_end = x_ranges[i]
+            height = y[i]
+            width = x_end - x_start
+            rect = plt.Rectangle((x_start, 0), width, height, edgecolor=None, facecolor='#d55e00', alpha=0.3)
+            ax.add_patch(rect)
+            
+        plot_segments(ax, segments_coordinates)
+        if gene_annotation is not None:
+            plot_genes(ax, gene_annotation, chrom, start, end, max(y))
+        plot_foldbacks(ax, foldbacks_coordinate,max(y),max(x)-min(x), min(x))
+        plot_structure(ax, scores, segments_coordinates,arm,max(y),max(x)-min(x),foldbacks_coordinate)
+        plt.xlabel('Position', fontsize=16)
+        plt.ylabel('Copy number', fontsize=16)
+        ylim = ax.get_ylim()
+        plt.ylim(0, ylim[1] * 1.05)
+        plot_segments_border(ax, segments_coordinates,ax.get_ylim()[1], max(y))
+        ytcik = ax.get_yticks()
+        new_ytick = []
+        for i in ytcik:
+            if i < max(y)*1.1:
+                new_ytick.append(i)
+        plt.yticks(new_ytick)
+        ax.add_patch(plt.Rectangle((ax.get_xlim()[0], max(y)*1.04), ax.get_xlim()[1]-ax.get_xlim()[0],
+                                        0.13*max(y), edgecolor='none', facecolor='y',
+                                        alpha=0.1))
+        plt.subplots_adjust(bottom=0.15, left = 0.175)
+        plt.legend(handles=[], loc ="upper left",title="Score = {score}".format(score = round(float(scores['Final_score']), 2)),prop={'size': 4},title_fontsize=6)
+        # plt.annotate("Score = {score}".format(score = str(scores['Final_score'])[:4]),xy = (0.1,0.1),xycoords='axes fraction',fontsize=6)
+        cell_line = output_prefix.split('/')[-1].split('_')[0]
+        plt.title(cell_line+' '+str(chrom)+arm, fontsize=16)
+        plt.savefig(output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'), dpi = 300)
+        plt.close()
+        print('Saved figure to '+output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'))
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-graph", "--graph", help="graph.txt dir", required=True)
+    parser.add_argument("-cycle", "--cycle", help="cycles.txt dir", required=True)
+    parser.add_argument("-cnr", "--cnr", help="cnr dir", required=True)
+    parser.add_argument("-o", "--output_prefix", help="Output_dir", required=True)
+    parser.add_argument("-d", "--deletion", help="Deletion, e.g., \"1,10000\"")
+    parser.add_argument("-pdf", "--pdf", action='store_true', help="Output pdf format")
+    parser.add_argument("-g", "--gene", help="Gene annotation", default=None)
+    parser.add_argument("-m", "--multiple", action='store_true', help="Visualize all structures")
+    args = parser.parse_args()
+    visualize_BFB(args.cycle, args.graph, args.cnr, args.output_prefix, gene_annotation=args.gene, deletion=args.deletion, pdf=args.pdf, multiple=args.multiple)
