@@ -5,8 +5,10 @@ import argparse
 
 try:
     from src.datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
+    from src.utils import get_normal_coverage, get_coverage_and_rc
 except:
     from datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
+    from utils import get_normal_coverage, get_coverage_and_rc
 
 def query_ends_from_cigar(cigar_str: str, strand: str) -> tuple[int, int, int]:
     """
@@ -138,16 +140,18 @@ def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, 
             j = i + 1
             alignment1, alignment2 = alignment_list[i], alignment_list[j]
             query_gap = alignment2.read_start - alignment1.read_end
+            mapping_quality = min(alignment1.mapping_quality, alignment2.mapping_quality)
 
             chrom1, chrom2 = alignment1.chrom, alignment2.chrom
             bp1, bp2 = alignment1.end, alignment2.start
             strand1, strand2 = alignment1.strand, REVERSE_STRAND[alignment2.strand]
             sv = SV(chrom1, bp1, strand1, chrom2, bp2, strand2)
             supported_SVs.append(sv)
-            SVs[sv].append((read_name, query_gap))
+            SVs[sv].append((read_name, query_gap, mapping_quality))
         if len(supported_SVs) > 1:
             alignment1, alignment2 = alignment_list[0], alignment_list[-1]
             query_gap = alignment2.read_start - alignment1.read_end
+            mapping_quality = min(alignment1.mapping_quality, alignment2.mapping_quality)
             
             # if -1000 < query_gap and query_gap < 1000:
             chrom1, chrom2 = alignment1.chrom, alignment2.chrom
@@ -155,7 +159,7 @@ def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, 
             strand1, strand2 = alignment1.strand, REVERSE_STRAND[alignment2.strand]
             TST_sv = SV(chrom1, bp1, strand1, chrom2, bp2, strand2)
             TST_sv.TST = True
-            SVs[TST_sv].append((read_name, query_gap))
+            SVs[TST_sv].append((read_name, query_gap, mapping_quality))
             TST_SVs.append(TST_sv)
             
     # Cluster foldback inversions
@@ -164,19 +168,19 @@ def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, 
         if sv in TST_SVs:
             sv.TST = True
         # remove duplicate read_names
-        unique_reads = defaultdict(list)
-        for read, gap in read_list:
-            unique_reads[read].append(gap)
-        SVs[sv] = [(read, round(sum(gaps)/len(gaps))) for read, gaps in unique_reads.items()]
+        # unique_reads = defaultdict(list)
+        # for read, gap in read_list:
+        #     unique_reads[read].append(gap)
+        # SVs[sv] = [(read, round(sum(gaps)/len(gaps))) for read, gaps in unique_reads.items()]
     # Print results
     if output_fn != None:
         output_file = open(output_fn, 'a')
-        output_file.write('SV\tSV_type\tTST\t#Support_reads\tQuery_gaps\tSupport_reads\n')
+        output_file.write('SV\tSV_type\tTST\t#Support_reads\tMapping_quality\tQuery_gaps\tSupport_reads\n')
         for sv, info in SVs.items():
             if 2*len(info)/normal_cov < min_cn:
                 continue
-            reads, query_gaps = [read for (read, _) in info], [str(gap) for (_, gap) in info]
-            output_file.write(f'{sv}\t{sv.type}\t{sv.TST}\t{len(info)}\t{','.join(query_gaps)}\t{','.join(reads)}\n')
+            reads, query_gaps, mapping_qualities = [read for (read, _, _) in info], [str(gap) for (_, gap, _) in info], [str(mq) for (_, _, mq) in info]
+            output_file.write(f'{sv}\t{sv.type}\t{sv.TST}\t{len(info)}\t{','.join(mapping_qualities)}\t{','.join(query_gaps)}\t{','.join(reads)}\n')
         output_file.close()
     output_inversions = {}
     for sv, info in SVs.items():
@@ -188,10 +192,14 @@ def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description = "Call foldback inversions from bam.")
     parser.add_argument("--bam", help = "Path to a sorted bam file", required = True)
-    parser.add_argument("--region", help = "Call SVs from a specific region (e.g. chr1:1000000-2000000)")
-    parser.add_argument("--coverage", help = "Normal coverage of the WGS data. ", type=float, default=10)
-    parser.add_argument("--output_fn", help = "Output file name")
+    parser.add_argument("--cns", help = "Path to a cns file for normal coverage estimation", required = True)
+    parser.add_argument("--region", help = "Call SVs from a specific region (e.g. chr1:1000000-2000000)", required = True)
+    parser.add_argument("--output_prefix", help = "Output file name", required = True)
+    parser.add_argument("--min_sv_cn", type=float, default=0.75, help="Minimum copy number for SV calling (default: 0.75)")
+    parser.add_argument("--min_mapq", type=int, default=20, help="Minimum mapping quality for SV calling (default: 20)")
     args = parser.parse_args()
+
+    normal_cov = get_normal_coverage(args.cns, args.bam)
 
     region = None
     if args.region != None:
@@ -200,13 +208,9 @@ if __name__ == '__main__':
         end = int(args.region.split('-')[1])
         region = (chrom, start, end)
 
-    SVs = call_SVs(args.bam, region, normal_cov=args.coverage)
-
-    # for sv, cov in SVs.items():
-    #     print(sv, cov, sv.type)
-
-    if args.output_fn != None:
-        outfile = open(args.output_fn, 'w')
-        for key, count in SVs.items():
-            outfile.write(f'{key}\t{count}\n')
-        outfile.close()
+    output_read_fn = None if args.output_prefix == None else f'{args.output_prefix}_reads.txt'
+    if output_read_fn != None:
+        output_file = open(output_read_fn, 'w')
+        output_file.close()
+    SVs = call_SVs(args.bam, region, normal_cov=normal_cov, output_fn=output_read_fn, min_cn=args.min_sv_cn, min_mapq=args.min_mapq)
+    print(f'Saved structural variants to {args.output_prefix}_reads.txt.')

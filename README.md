@@ -42,9 +42,13 @@ Then run BFBArchitect to reconstruct potential BFB sequences for any genomic reg
 ```
 python /path/to/BFBArchitect/src/BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
 ```
-BFBArchitect also supports reconstructing BFB sequences at the whole-genome level, given CoRAL results at ```CoRAL_output_directory```: 
+BFBArchitect supports reconstructing BFB sequences at the whole-genome level, given CoRAL results at ```CoRAL_output_directory```: 
 ```
 python /path/to/BFBArchitect/scripts/batch_run.py --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
+```
+BFBArchitect also supports reconstructing BFB sequences from [AmapliconArchitect](https://github.com/AmpliconSuite/AmpliconArchitect) outputs:
+```
+python /path/to/BFBArchitect/run_AA_output.py --graph <AA_graph.txt> --cycle <AA_cycles.txt> --output_prefix <dir/output_prefix>
 ```
 ### Required arguments
 - --bam <.bam file>: Aligned long reads

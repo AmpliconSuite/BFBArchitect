@@ -1,5 +1,3 @@
-from asyncio.log import logger
-
 import matplotlib.pyplot as plt
 import argparse
 import pandas as pd
@@ -35,7 +33,7 @@ def parse_segment_coordinates(file_dir, seg_num):
                 end = int(line[2].split(':')[1][:-1])
                 # if not (107462692 <= start and end <= 107617365):
                 #     continue
-                cn = int(line[3])
+                cn = float(line[3])
                 segments_coordinates[name] = {'chrom':chrom, 'start':start, 'end':end,'cn':cn}
                 if len(segments_coordinates) == seg_num:
                     break
@@ -69,7 +67,7 @@ def parse_foldback_coordinate(file_dir, segments, chrom, start, end):
         for line in f:
             if line.startswith('discordant'):
                 line = line.strip().split('\t')
-                cn = int(line[2])
+                cn = float(line[2])
                 pos1, pos2 = line[1].split('->')
                 chr1, chr2 = pos1.split(':')[0], pos2.split(':')[0]
                 bp1, bp2 = int(pos1.split(':')[1][:-1]), int(pos2.split(':')[1][:-1])
@@ -313,7 +311,16 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
     reconstructed_structure = ''
     chrom , start , end = detect_start_end(segments_coordinates)
     foldbacks_coordinate = parse_foldback_coordinate(graph_file, segments_coordinates, chrom, start, end)
-    x, x_ranges, y = extract_fcna(cnr_file, chrom, start, end)
+    if cnr_file == None:
+        x = []
+        y = []
+        x_ranges = []
+        for s in segments_coordinates.keys():
+            x.append((segments_coordinates[s]['start'] + segments_coordinates[s]['end'])//2)
+            x_ranges.append((segments_coordinates[s]['start'], segments_coordinates[s]['end']))
+            y.append(segments_coordinates[s]['cn'])
+    else:
+        x, x_ranges, y = extract_fcna(cnr_file, chrom, start, end)
     arm = ''
     if max(x) < CHR_CENTRO[chrom]:
         arm = 'p'

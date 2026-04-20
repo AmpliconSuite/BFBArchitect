@@ -1,8 +1,7 @@
 import argparse
-import re
 import time
 import pandas as pd
-import pysam
+
 from collections import defaultdict
 from pathlib import Path
 
@@ -10,55 +9,12 @@ try:
     from src.SVCaller import call_SVs
     from src.BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
     from src.datatypes import CHR_CENTRO, CHR_SIZES
-    from src.utils import create_logger
+    from src.utils import create_logger, get_normal_coverage, get_coverage_and_rc
 except:
     from SVCaller import call_SVs
     from BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
     from datatypes import CHR_CENTRO, CHR_SIZES
-    from utils import create_logger
-
-def get_normal_coverage(cns_fn, bam_fn):
-    # Get normal genome regions
-    cns = pd.read_csv(cns_fn, sep="\t")
-    sex_chr = re.compile(r"^(chr)?[XY]$", re.IGNORECASE)
-    cns = cns[~cns.chromosome.apply(lambda x: bool(sex_chr.match(x)))]
-    segments = cns.sort_values(by='log2').reset_index(drop=True) # sort all segments by log2
-    l = int(len(segments) / 2.4)
-    r = l + 1
-    total_length = 0
-    log2_cn = []
-    regions = []
-    while total_length < 10_000_000:
-        l_chr, l_start, l_end = segments.loc[l].chromosome, int(segments.loc[l].start), int(segments.loc[l].end)
-        regions.append((l_chr, l_start, l_end))
-        total_length += l_end - l_start
-        log2_cn.append(segments.loc[l].log2)
-        r_chr, r_start, r_end = segments.loc[r].chromosome, int(segments.loc[r].start), int(segments.loc[r].end)
-        regions.append((r_chr, r_start, r_end))
-        total_length += r_end - r_start
-        log2_cn.append(segments.loc[r].log2)
-        l -= 1
-        r += 1
-    # Get normal coverage
-    (normal_cov, _) = get_coverage_and_rc(bam_fn, regions)
-    return normal_cov
-
-def get_coverage_and_rc(bam_fn, intervals, qc_threshold=0):
-    total_length, total_bases = 0, 0
-    bam = pysam.AlignmentFile(bam_fn, "rb")
-    read_count = 0
-    for (chrom, start, end) in intervals:
-        total_length += end - start + 1
-        for read in bam.fetch(chrom, start, end):
-            if read.mapping_quality < qc_threshold or read.seq == None:
-                continue
-            read_count += 1
-            for block_start, block_end in read.get_blocks():
-                if block_end < start or block_start > end:
-                    continue
-                total_bases += min(block_end, end) - max(block_start, start)
-    coverage = total_bases / total_length
-    return (coverage, read_count)
+    from utils import create_logger, get_coverage_and_rc, get_normal_coverage
 
 def expand_region(bam_fn, normal_cov, region, CN_threshold=2, size=100000):
     chrom, start, end = region
@@ -68,13 +24,13 @@ def expand_region(bam_fn, normal_cov, region, CN_threshold=2, size=100000):
         left_bound, right_bound = CHR_CENTRO[chrom], CHR_SIZES[chrom]
     left = start
     while left-size >= left_bound and start - left < 100*size:
-        coverage, _ = get_coverage_and_rc(bam_fn, [(chrom, left-size, left)])
+        coverage, _ = get_coverage_and_rc(bam_fn, (chrom, left-size, left))
         if round(coverage * 2 / normal_cov - 1) <= CN_threshold:
             break
         left -= size
     right = end
     while right+size <= right_bound and right - end < 100*size:
-        coverage, _ = get_coverage_and_rc(bam_fn, [(chrom, right, right+size)])
+        coverage, _ = get_coverage_and_rc(bam_fn, (chrom, right, right+size))
         if round(coverage * 2 / normal_cov - 1) <= CN_threshold:
             break
         right += size
@@ -178,7 +134,7 @@ def region_segmentation(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50
             if pos1 > pos2:
                 pos1, pos2 = pos2, pos1
             segment_list.append((chrom, pos1, pos2))
-        coverage_and_rc = [get_coverage_and_rc(bam_fn, [segment]) for segment in segment_list]
+        coverage_and_rc = [get_coverage_and_rc(bam_fn, segment) for segment in segment_list]
         cn = [round(2*c/normal_cov)-1 for (c, _) in coverage_and_rc]
         i = 0
         bkps_abs = [abs(bkp) for bkp in bkps]
@@ -193,7 +149,7 @@ def region_segmentation(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50
                     new_seg = (curr_seg[0], curr_seg[1], next_seg[2])
                     segment_list[i] = new_seg
                     del segment_list[i+1]
-                    (coverage, _) = get_coverage_and_rc(bam_fn, [new_seg])
+                    (coverage, _) = get_coverage_and_rc(bam_fn, new_seg)
                     cn[i] = round(2*coverage/normal_cov)-1
                     del cn[i+1]
                     continue
@@ -258,7 +214,7 @@ def compute_BFB_scores(coverage, normal_cov, cn0, lf0, rf0, BFB_strings, multipl
     return scores
 
 def generate_graph_file(output_fn, bam_fn, segments, extra_segments, coverage_and_rc, SVs, normal_cov):
-    coverage_and_rc += [get_coverage_and_rc(bam_fn, [segment]) for segment in extra_segments]
+    coverage_and_rc += [get_coverage_and_rc(bam_fn, segment) for segment in extra_segments]
     all_segments = segments + extra_segments
     # Generate graph.txt
     out_file = open(output_fn, 'w')
@@ -368,7 +324,7 @@ def reconstruct_BFB(bam_fn, cns_fn, region, output_prefix, segmentation=False, d
     print("Segmenting the amplicon region...")
     segments, extra_segments = region_segmentation(cns_fn, bam_fn, region, SVs, normal_cov, tolerance=0.1, CNV_segmentation=segmentation)
     # CNV calling 
-    coverage_and_rc = [get_coverage_and_rc(bam_fn, [segment]) for segment in segments]
+    coverage_and_rc = [get_coverage_and_rc(bam_fn, segment) for segment in segments]
     cn = [max(0, round(2*c/normal_cov)-1) for (c, _) in coverage_and_rc]
     # cn = [max(0, round(2*c/normal_cov)) for (c, _) in coverage_and_rc] # for simulation
     # Restimate segment CN based on deletions
