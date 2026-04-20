@@ -48,7 +48,7 @@ python /path/to/BFBArchitect/scripts/batch_run.py --directory <CoRAL_output_dire
 ```
 BFBArchitect also supports reconstructing BFB sequences from [AmapliconArchitect](https://github.com/AmpliconSuite/AmpliconArchitect) outputs:
 ```
-python /path/to/BFBArchitect/run_AA_output.py --graph <AA_graph.txt> --cycle <AA_cycles.txt> --output_prefix <dir/output_prefix>
+python /path/to/BFBArchitect/scripts/run_AA_output.py --graph <AA_graph.txt> --cycle <AA_cycles.txt> --output_prefix <dir/output_prefix>
 ```
 ### Required arguments
 - --bam <.bam file>: Aligned long reads

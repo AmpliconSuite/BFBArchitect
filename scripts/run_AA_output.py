@@ -73,14 +73,14 @@ def generate_graph_file(output_fn, new_segments, SVs, sv_fino):
     out_file.write('SequenceEdge: StartPosition, EndPosition, PredictedCN, AverageCoverage, Size, NumberReadsMapped\n')
     for i, seg in enumerate(new_segments):
         size = seg[2] - seg[1] + 1
-        entry = f'sequence	{seg[0]}:{seg[1]}-	{seg[0]}:{seg[2]}+	{seg[3]}	{seg[4]}	{size}	{seg[5]}\n'
+        entry = f'sequence	{seg[0]}:{seg[1]}-	{seg[0]}:{seg[2]}+	{seg[3] - 1}	{seg[4]}	{size}	{seg[5]}\n'
         out_file.write(entry)
     out_file.write('BreakpointEdge: StartPosition->EndPosition, PredictedCN, NumberOfReadPairs\n')
     for i in range(1, len(new_segments)):
         seg1, seg2 = new_segments[i-1], new_segments[i]
         if seg1[0] != seg2[0] or seg1[2]+1 != seg2[1]: 
             continue
-        cn = min(new_segments[i-1][3], new_segments[i][3])
+        cn = min(new_segments[i-1][3] - 1, new_segments[i][3] - 1)
         read_count = int((new_segments[i-1][5]+new_segments[i][5])/2)
         entry = f'concordant	{seg1[0]}:{seg1[2]}+->{seg2[0]}:{seg2[1]}-	{cn}	{read_count}\n'
         out_file.write(entry)
