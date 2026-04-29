@@ -180,7 +180,7 @@ def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, 
             if 2*len(info)/normal_cov < min_cn:
                 continue
             reads, query_gaps, mapping_qualities = [read for (read, _, _) in info], [str(gap) for (_, gap, _) in info], [str(mq) for (_, _, mq) in info]
-            output_file.write(f'{sv}\t{sv.type}\t{sv.TST}\t{len(info)}\t{','.join(mapping_qualities)}\t{','.join(query_gaps)}\t{','.join(reads)}\n')
+            output_file.write(f"{sv}\t{sv.type}\t{sv.TST}\t{len(info)}\t{','.join(mapping_qualities)}\t{','.join(query_gaps)}\t{','.join(reads)}\n")
         output_file.close()
     output_inversions = {}
     for sv, info in SVs.items():

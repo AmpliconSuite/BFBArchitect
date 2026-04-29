@@ -277,7 +277,7 @@ def generate_cycle_file(output_fn, segments, BFB_strings, scores, multiplicity):
                 path.append(f'{seg}+')
             else:
                 path.append(f'{-seg}-')
-        out_file.write(f'Path={i+1};Copy_count=1;Segments={','.join(path)};Path_constraints_satisfied=;Score={scores[i]};Multiplicity={multiplicity}\n')
+        out_file.write(f"Path={i+1};Copy_count=1;Segments={','.join(path)};Path_constraints_satisfied=;Score={scores[i]};Multiplicity={multiplicity}\n")
     out_file.close()
 
 def reconstruct_BFB(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=False, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver='gurobi'):

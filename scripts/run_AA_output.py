@@ -126,13 +126,12 @@ def generate_cycle_file(output_fn, new_segments, BFB_strings, scores, multiplici
                 path.append(f'{seg}+')
             else:
                 path.append(f'{-seg}-')
-        out_file.write(f'Path={i+1};Copy_count=1;Segments={','.join(path)};Path_constraints_satisfied=;Score={scores[i]};Multiplicity={multiplicity}\n')
+        out_file.write(f"Path={i+1};Copy_count=1;Segments={','.join(path)};Path_constraints_satisfied=;Score={scores[i]};Multiplicity={multiplicity}\n")
     out_file.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run BFBArchitect based on AA output.")
     parser.add_argument("--graph", help="Path to the graph.txt file from AA output.", required=True)
-    parser.add_argument("--cycle", help="Path to the cycles.txt file from AA output.", required=True)
     parser.add_argument("--output_prefix", help = "Prefix of output files.", required=True)
     parser.add_argument("--multiple", help="Reconstruct multiple BFB candidates", action='store_true')
     parser.add_argument("--solver", help="ILP solver to use: 'gurobi' or 'cbc' (default: gurobi)", default='gurobi')
@@ -143,10 +142,6 @@ if __name__ == "__main__":
     start_time = time.time()
     logger.info(f'Command: python run_AA_output.py {" ".join(sys.argv[1:])}')
 
-    # Extract amplified region from the cycle file
-    interval = open(args.cycle, 'r').readline().strip() # Expected format: "Interval	1	chr19	27645416	30219166"
-    _, _, chrom, start, end = interval.split()
-    region = (chrom, int(start), int(end))
     # Extract segments and foldback SVs from the graph file
     SVs = []
     SV_info = {}
@@ -170,6 +165,16 @@ if __name__ == "__main__":
                 end = int(parts[2].split(':')[1].split('+')[0])
                 seg_cn = float(parts[3])
                 segments.append((chrom, start, end, seg_cn, float(parts[4]), int(parts[6])))
+    # Derive the amplified region from the sequence edges (primary chromosome = first seen)
+    chrom_ranges = {}
+    for (seg_chrom, seg_start, seg_end, *_) in segments:
+        if seg_chrom not in chrom_ranges:
+            chrom_ranges[seg_chrom] = [seg_start, seg_end]
+        else:
+            chrom_ranges[seg_chrom][0] = min(chrom_ranges[seg_chrom][0], seg_start)
+            chrom_ranges[seg_chrom][1] = max(chrom_ranges[seg_chrom][1], seg_end)
+    primary_chrom = next(iter(chrom_ranges))
+    region = (primary_chrom, chrom_ranges[primary_chrom][0], chrom_ranges[primary_chrom][1])
     # Segmentation
     breakpoints = set()
     for sv in SVs:
