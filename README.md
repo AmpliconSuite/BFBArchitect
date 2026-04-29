@@ -11,23 +11,30 @@ long-read sequencing (currently support Oxford Nanopore).
 - Python>=3.12.8 (https://www.python.org/downloads/release/python-3128/)
 
 ## Installation
-BFBArchitect can be installed and run on most modern Unix-like operating systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS). It requires python>=3.8 and the above dependencies. Please follow the instructions to install (more installation options will be provided soon):
-1. Pull the source code
-    ```
-    git clone git@github.com:AmpliconSuite/BFBArchitect.git
-    cd /path/to/BFBArchitect
-    ```
-2. Create a virtual environment (optional)
-    ```
-    python3 -m venv BFBArchitect_venv
-    source BFBArchitect_venv/bin/activate
-    ```
-3. Install dependencies locally
-    ```
-    pip install .
-    ```
-4. Recommended for efficient ILP solving: Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license))
-   * Place the ```gurobi.lic``` file in ```$HOME/gurobi.lic```.
+BFBArchitect can be installed and run on most modern Unix-like operating systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS). It requires python>=3.8 and the above dependencies.
+
+First, pull the source code:
+```
+git clone git@github.com:AmpliconSuite/BFBArchitect.git
+cd /path/to/BFBArchitect
+```
+
+### Option A: conda (recommended)
+```
+conda env create -f environment.yml
+conda activate bfbarchitect
+pip install --no-deps .
+```
+
+### Option B: pip + virtual environment
+```
+python3 -m venv BFBArchitect_venv
+source BFBArchitect_venv/bin/activate
+pip install .
+```
+
+### Gurobi license (recommended for efficient ILP solving)
+Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. Without it, BFBArchitect falls back to the open-source CBC solver (slower, no solution pool).
    
 
 ## Running
