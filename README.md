@@ -58,11 +58,18 @@ BFBArchitect supports reconstructing BFB sequences at the whole-genome level, gi
 ```
 python /path/to/BFBArchitect/scripts/batch_run.py --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
 ```
-BFBArchitect also supports reconstructing BFB sequences directly from an [AmpliconArchitect](https://github.com/AmpliconSuite/AmpliconArchitect) (or BFBArchitect) `_graph.txt` file, with no BAM or CNS file required. BFB candidate regions are auto-detected from the graph:
+BFBArchitect also supports reconstructing BFB sequences directly from an [AmpliconArchitect](https://github.com/AmpliconSuite/AmpliconArchitect) (or BFBArchitect) `_graph.txt` file, with no BAM or CNS file required. Three modes are supported:
 ```
+# Auto-detect BFB candidate regions (default) — one output set per region
 BFBArchitect.py --graph <AA_graph.txt> --output_prefix <dir/output_prefix>
+
+# Process a specific region only — single output at <output_prefix>_BFB_*
+BFBArchitect.py --graph <AA_graph.txt> --region chr7:120000000-125000000 --output_prefix <dir/output_prefix>
+
+# Treat all segments as one region — single output at <output_prefix>_BFB_*
+BFBArchitect.py --graph <AA_graph.txt> --whole_graph --output_prefix <dir/output_prefix>
 ```
-This produces one set of output files per detected BFB region, named `<output_prefix>_region1_BFB_*`, `<output_prefix>_region2_BFB_*`, etc. To skip auto-detection and treat all segments in the graph as a single region (legacy behavior), add `--whole_graph`.
+`--region` and `--whole_graph` are mutually exclusive.
 
 ### Required arguments (BAM mode)
 - --bam <.bam file>: Aligned long reads
@@ -82,6 +89,7 @@ This produces one set of output files per detected BFB region, named `<output_pr
 ### Optional arguments (both modes)
 - --multiple: Reconstruct multiple optimal BFB candidate sequences (requires Gurobi)
 - --solver gurobi|cbc: ILP solver to use (default: autodetect)
+- --region <string>: (graph mode) process a specific region only, bypassing auto-detection (e.g. chr7:120000000-125000000). Mutually exclusive with --whole_graph.
 - --whole_graph: (graph mode only) treat all segments as a single region instead of auto-detecting BFB regions
 - -g / --gene <gtf_file>: Gene annotation for visualization (graph mode only)
 - --centromere <.bed file>: Path to a BED file of centromere regions (≥3 tab-separated columns: chrom, start, end). Multiple rows per chromosome are merged to a single midpoint. Falls back to built-in hg38 defaults if omitted. An example GRCh38 file is provided at `resources/GRCh38_centromere.bed`.

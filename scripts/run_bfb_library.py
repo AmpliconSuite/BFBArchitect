@@ -12,16 +12,18 @@ except ImportError:
         sys.path.insert(0, project_root)
 
 from bfbarchitect import (
-    find_bfb_candidate_regions,
-    subsect_graph_for_region,
-    trim_background_segments,
-    reconstruct_bfb,
+    reconstruct_bfb_from_graph,
     write_bfb_graph,
     write_bfb_cycles,
-    CHR_CENTRO
 )
 
-def run_bfb_library(graph_file, output_prefix, multiple=False, solver=None, verbose=False):
+def _parse_region(region_str):
+    chrom, rest = region_str.split(':')
+    start, end = rest.split('-')
+    return (chrom, int(start), int(end))
+
+def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
+                    multiple=False, solver=None, verbose=False):
     """
     Demonstrate how to use the BFBArchitect library API to reconstruct BFB sequences
     from an AA-format _graph.txt file.
@@ -33,49 +35,37 @@ def run_bfb_library(graph_file, output_prefix, multiple=False, solver=None, verb
         print(f"Error: Graph file {graph_file} not found.")
         return
 
-    # 1. Detect candidate BFB regions in the graph
-    regions = find_bfb_candidate_regions(graph_file)
-    print(f"Detected {len(regions)} candidate region(s): {regions}")
+    results = reconstruct_bfb_from_graph(
+        graph_file,
+        whole_graph=whole_graph,
+        region=region,
+        solver=solver,
+        multiple=multiple,
+        verbose=verbose,
+    )
 
-    # 2. Extract and pre-process segment data for each region
-    region_data = subsect_graph_for_region(graph_file, regions, verbose=verbose)
-
-    for i, (region, data) in enumerate(zip(regions, region_data)):
-        if data is None:
-            print(f"Skipping region {i+1}: {region} (no data extracted)")
-            continue
-
-        new_segments, cn, lf, rf, region_svs, sv_info = data
-        chrom = region[0]
-        new_segments, cn, lf, rf = trim_background_segments(new_segments, cn, lf, rf)
-        if not new_segments:
-            print(f"Skipping region {i+1}: {region} (all segments are background after trimming)")
-            continue
-
-        print(f"\nProcessing region {i+1}: {region}")
-
-        # 3. Reconstruct BFB strings using the ILP solver
-        # Scores are printed to stdout inside reconstruct_bfb.
-        BFB_strings, scores, multiplicity = reconstruct_bfb(
-            new_segments, cn, lf, rf,
-            CHR_CENTRO.get(chrom, 0),
-            solver=solver, multiple=multiple, verbose=verbose
-        )
-
-        # 4. Save results
-        region_prefix = f"{output_prefix}_region{i+1}"
-        write_bfb_graph(f"{region_prefix}_graph.txt", new_segments, region_svs, sv_info)
-        write_bfb_cycles(f"{region_prefix}_cycles.txt", new_segments, BFB_strings, scores, multiplicity)
+    for i, res in enumerate(results):
+        region_prefix = output_prefix if (whole_graph or region is not None) else f"{output_prefix}_region{i+1}"
+        write_bfb_graph(f"{region_prefix}_graph.txt", res['new_segments'], res['svs'], res['sv_info'])
+        write_bfb_cycles(f"{region_prefix}_cycles.txt", res['new_segments'], res['bfb_strings'], res['scores'], res['multiplicity'])
         print(f"  Written: {region_prefix}_graph.txt, {region_prefix}_cycles.txt")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Invoke BFBArchitect library API on a graph file.")
     parser.add_argument("graph", help="Path to AA-format _graph.txt file.")
     parser.add_argument("--output_prefix", help="Prefix for output files.", default="bfb_output")
+    parser.add_argument("--whole_graph", action="store_true", help="Treat all segments as one region.")
+    parser.add_argument("--region", help="Process a specific region only (chr:start-end).", default=None)
     parser.add_argument("--multiple", action="store_true", help="Reconstruct multiple candidates.")
     parser.add_argument("--solver", help="Solver to use (gurobi or cbc).", default=None)
     parser.add_argument("--verbose", action="store_true", help="Print per-step segment transforms and CN/LF/RF vectors.")
 
     args = parser.parse_args()
 
-    run_bfb_library(args.graph, args.output_prefix, args.multiple, args.solver, args.verbose)
+    if args.whole_graph and args.region:
+        parser.error("--whole_graph and --region are mutually exclusive.")
+
+    parsed_region = _parse_region(args.region) if args.region else None
+
+    run_bfb_library(args.graph, args.output_prefix, args.whole_graph, parsed_region,
+                    args.multiple, args.solver, args.verbose)

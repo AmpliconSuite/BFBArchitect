@@ -508,7 +508,8 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     logger.info(f'Total time: {time.time() - start_time} seconds')
 
 def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
-                               multiple=False, whole_graph=False, verbose=False, log_file=None):
+                               multiple=False, whole_graph=False, region=None,
+                               verbose=False, log_file=None):
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -543,28 +544,31 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                 'sv_info': sv_info,
             })
     else:
-        regions = find_bfb_candidate_regions(graph_fn)
-        if not regions:
-            print('No BFB candidate regions found in the graph file.')
-            return results
-        print(f'Found {len(regions)} BFB candidate region(s): '
-              + ', '.join(f'{r[0]}:{r[1]}-{r[2]}' for r in regions))
+        if region is not None:
+            regions = [region]
+        else:
+            regions = find_bfb_candidate_regions(graph_fn)
+            if not regions:
+                print('No BFB candidate regions found in the graph file.')
+                return results
+            print(f'Found {len(regions)} BFB candidate region(s): '
+                  + ', '.join(f'{r[0]}:{r[1]}-{r[2]}' for r in regions))
         region_data = subsect_graph_for_region(graph_fn, regions, verbose=verbose)
-        for i, (region, data) in enumerate(zip(regions, region_data)):
+        for i, (cur_region, data) in enumerate(zip(regions, region_data)):
             if data is None:
                 continue
             new_segments, cn, lf, rf, region_svs, sv_info = data
-            chrom = region[0]
+            chrom = cur_region[0]
             new_segments, cn, lf, rf = trim_background_segments(new_segments, cn, lf, rf)
             if not new_segments:
                 continue
-            print(f'\nProcessing region {i+1}: {chrom}:{region[1]}-{region[2]}')
+            print(f'\nProcessing region {i+1}: {chrom}:{cur_region[1]}-{cur_region[2]}')
             BFB_strings, scores, multiplicity = reconstruct_bfb(
                 new_segments, cn, lf, rf,
                 centromere_dict.get(chrom, 0),
                 solver=solver, multiple=multiple, verbose=verbose, log_file=log_file)
             results.append({
-                'region': region,
+                'region': cur_region,
                 'new_segments': new_segments,
                 'bfb_strings': BFB_strings,
                 'scores': scores,
@@ -575,7 +579,8 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
     return results
 
 def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
-                       whole_graph=False, gene=None, centromere_dict=None, verbose=False):
+                       whole_graph=False, region=None, gene=None,
+                       centromere_dict=None, verbose=False):
     """
     CLI entry point to reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -592,12 +597,13 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
     start_time = time.time()
     results = reconstruct_bfb_from_graph(
         graph_fn, centromere_dict=centromere_dict, solver=solver,
-        multiple=multiple, whole_graph=whole_graph, verbose=verbose, log_file=log_file
+        multiple=multiple, whole_graph=whole_graph, region=region,
+        verbose=verbose, log_file=log_file
     )
     if not results:
         return
     for i, res in enumerate(results):
-        region_prefix = output_prefix if whole_graph else f'{output_prefix}_region{i + 1}'
+        region_prefix = output_prefix if (whole_graph or region is not None) else f'{output_prefix}_region{i + 1}'
         write_bfb_graph(f'{region_prefix}_BFB_graph.txt', res['new_segments'], res['svs'], res['sv_info'])
         write_bfb_cycles(f'{region_prefix}_BFB_cycles.txt', res['new_segments'], res['bfb_strings'], res['scores'], res['multiplicity'])
         print(f'Generated {region_prefix}_BFB_graph.txt and {region_prefix}_BFB_cycles.txt')
@@ -611,6 +617,19 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
         )
     logger.info(f'Total time: {time.time() - start_time:.1f} seconds')
 
+def _parse_region_string(region_str):
+    """Parse 'chrN:start-end' into (chrom, int_start, int_end). Supports M/K suffixes."""
+    def _parse_pos(s):
+        s = s.strip()
+        if s.upper().endswith('M'):
+            return int(float(s[:-1]) * 1_000_000)
+        if s.upper().endswith('K'):
+            return int(float(s[:-1]) * 1_000)
+        return int(s)
+    chrom, rest = region_str.split(':')
+    start_str, end_str = rest.split('-')
+    return (chrom, _parse_pos(start_str), _parse_pos(end_str))
+
 def main():
     parser = argparse.ArgumentParser(
         description="BFBArchitect for detecting and reconstructing BFB sequences in an amplicon region.")
@@ -619,7 +638,7 @@ def main():
     parser.add_argument("-g", "--gene", help="Gene annotation GTF file for visualization.", default=None)
     parser.add_argument("--bam", help="Path to a sorted bam file.", default=None)
     parser.add_argument("--cns", help="Path to a sorted cns file.", default=None)
-    parser.add_argument("--region", help="The amplified region.", default=None)
+    parser.add_argument("--region", help="The amplified region (chr:start-end). For --graph: process this specific region only.", default=None)
     parser.add_argument("--segmentation", help="Consider CNV in segmentation", action='store_true')
     parser.add_argument("--deletion", help="Deletion handling", action='store_true')
     parser.add_argument("--coverage", help="Sequencing coverage.", type=float, default=None)
@@ -634,7 +653,12 @@ def main():
     args = parser.parse_args()
     centromere_dict = build_centromere_dict(args.centromere)
     if args.graph:
-        run_bfb_from_graph(args.graph, args.output_prefix, args.multiple, args.solver, args.whole_graph, args.gene, centromere_dict, verbose=args.verbose)
+        if args.whole_graph and args.region:
+            parser.error("--whole_graph and --region are mutually exclusive.")
+        parsed_region = _parse_region_string(args.region) if args.region else None
+        run_bfb_from_graph(args.graph, args.output_prefix, args.multiple, args.solver,
+                           args.whole_graph, region=parsed_region, gene=args.gene,
+                           centromere_dict=centromere_dict, verbose=args.verbose)
     elif args.bam and args.cns and args.region:
         reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict, verbose=args.verbose)
     else:
