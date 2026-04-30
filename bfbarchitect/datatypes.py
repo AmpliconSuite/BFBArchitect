@@ -84,6 +84,34 @@ CHR_CENTRO = {
     "chrY": 10316944,
 }
 
+
+def load_centromere_bed(bed_path):
+    """Parse a centromere BED file; return {chrom: midpoint}."""
+    from collections import defaultdict
+    spans = defaultdict(lambda: [float('inf'), 0])
+    with open(bed_path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t')
+            if len(parts) < 3:
+                continue
+            chrom, start, end = parts[0], int(parts[1]), int(parts[2])
+            spans[chrom][0] = min(spans[chrom][0], start)
+            spans[chrom][1] = max(spans[chrom][1], end)
+    return {chrom: (lo + hi) // 2 for chrom, (lo, hi) in spans.items()}
+
+
+def build_centromere_dict(bed_path=None):
+    """Return centromere dict: CHR_CENTRO overlaid with values from bed_path if provided."""
+    if bed_path is None:
+        return CHR_CENTRO
+    merged = dict(CHR_CENTRO)
+    merged.update(load_centromere_bed(bed_path))
+    return merged
+
+
 class CigarAlignment:
     def __init__(self, chrom:str, start:int, end:int, strand:str, ref_length:int, read_name:str, read_start:int, read_end:int, \
                  mapping_quality:float, edit_dist:float):

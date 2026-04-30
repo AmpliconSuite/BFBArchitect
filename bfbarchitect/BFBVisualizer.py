@@ -5,10 +5,10 @@ from pathlib import Path
 import hashlib
 
 try:
-    from src.datatypes import SV, CHR_CENTRO
-    from src.utils import create_logger
+    from bfbarchitect.datatypes import SV, CHR_CENTRO, build_centromere_dict
+    from bfbarchitect.utils import create_logger
 except:
-    from datatypes import SV, CHR_CENTRO
+    from datatypes import SV, CHR_CENTRO, build_centromere_dict
     from utils import create_logger
 
 font = {'family' : 'Arial',
@@ -302,7 +302,7 @@ def plot_structure(ax, score, segments_coordinates, arm,max_y,max_x, foldbacks):
                 ax.annotate("", xy=(segments_coordinates[s]['start'],y + (rectangle_width/2) * max_y), xytext=(segments_coordinates[s]['start'] - arrow_length,y + (rectangle_width/2) * max_y), arrowprops=prop)
     ax.annotate('x'+str(score['Multiplicity']), xy = (ax.get_xlim()[1]-0.08*max_x, 0.90*ax.get_ylim()[1]),weight = 'bold',ha = 'center')
 
-def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotation=None, deletion=None, pdf=False, multiple=False):
+def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotation=None, deletion=None, pdf=False, multiple=False, centromere_dict=None):
     logger = create_logger('BFBVisualizer', f'{output_prefix}_visualization.log')
     logger.info(f'Command: python {Path(__file__).resolve()} --graph {graph_file} --cycle {cycle_file} --cnr {cnr_file} --output_prefix {output_prefix}' + (f' --deletion {deletion}' if deletion else '')
             + (f' --gene {gene_annotation}' if gene_annotation else '') + (f' --pdf' if pdf else ''))
@@ -321,8 +321,10 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
             y.append(segments_coordinates[s]['cn'])
     else:
         x, x_ranges, y = extract_fcna(cnr_file, chrom, start, end)
+    if centromere_dict is None:
+        centromere_dict = CHR_CENTRO
     arm = ''
-    if max(x) < CHR_CENTRO[chrom]:
+    if max(x) < centromere_dict.get(chrom, CHR_CENTRO.get(chrom, 0)):
         arm = 'p'
     else:
         arm = 'q'
@@ -377,5 +379,6 @@ if __name__ == "__main__":
     parser.add_argument("-pdf", "--pdf", action='store_true', help="Output pdf format")
     parser.add_argument("-g", "--gene", help="Gene annotation", default=None)
     parser.add_argument("-m", "--multiple", action='store_true', help="Visualize all structures")
+    parser.add_argument("--centromere", help="Path to a centromere BED file (hg38 defaults used if not provided).", default=None)
     args = parser.parse_args()
-    visualize_BFB(args.cycle, args.graph, args.cnr, args.output_prefix, gene_annotation=args.gene, deletion=args.deletion, pdf=args.pdf, multiple=args.multiple)
+    visualize_BFB(args.cycle, args.graph, args.cnr, args.output_prefix, gene_annotation=args.gene, deletion=args.deletion, pdf=args.pdf, multiple=args.multiple, centromere_dict=build_centromere_dict(args.centromere))

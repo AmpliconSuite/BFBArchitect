@@ -4,8 +4,8 @@ import re
 import argparse
 
 try:
-    from src.datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
-    from src.utils import get_normal_coverage, get_coverage_and_rc
+    from bfbarchitect.datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
+    from bfbarchitect.utils import get_normal_coverage, get_coverage_and_rc
 except:
     from datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
     from utils import get_normal_coverage, get_coverage_and_rc

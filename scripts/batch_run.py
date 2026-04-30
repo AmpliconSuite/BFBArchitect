@@ -3,16 +3,16 @@ import sys
 import argparse
 
 try:
-    from src.datatypes import SV, CHR_TO_IDX
-    from src.BFBArchitect import reconstruct_BFB
-    from src.BFBVisualizer import visualize_BFB
+    from bfbarchitect.datatypes import SV, CHR_TO_IDX, build_centromere_dict
+    from bfbarchitect.BFBArchitect import reconstruct_BFB
+    from bfbarchitect.BFBVisualizer import visualize_BFB
 except ImportError:
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-    from src.datatypes import SV, CHR_TO_IDX
-    from src.BFBArchitect import reconstruct_BFB
-    from src.BFBVisualizer import visualize_BFB
+    from bfbarchitect.datatypes import SV, CHR_TO_IDX, build_centromere_dict
+    from bfbarchitect.BFBArchitect import reconstruct_BFB
+    from bfbarchitect.BFBVisualizer import visualize_BFB
 
 def parse_SV(sv_str):
     # e.g., chr3:24524687-->chr3:24523614-
@@ -95,7 +95,10 @@ if __name__ == "__main__":
     parser.add_argument("--min_mapq", type=int, default=20, help="Minimum mapping quality for SV calling (default: 20)")
     parser.add_argument("--solver", help="ILP solver to use: 'gurobi' or 'cbc' (default: gurobi)", default='gurobi')
     parser.add_argument("--gene", help="Gene annotation", default=None)
+    parser.add_argument("--centromere", help="Path to a centromere BED file (hg38 defaults used if not provided). "
+                        "An example GRCh38 file is provided at resources/GRCh38_centromere.bed.", default=None)
     args = parser.parse_args()
+    centromere_dict = build_centromere_dict(args.centromere)
     foldbacks = find_foldbacks(args.directory)
     foldback_clusters = cluster_foldbacks(foldbacks)
     for i, cluster in enumerate(foldback_clusters):
@@ -117,7 +120,8 @@ if __name__ == "__main__":
             no_expansion=args.no_expansion,
             min_sv_cn=args.min_sv_cn,
             min_mapq=args.min_mapq,
-            solver=args.solver
+            solver=args.solver,
+            centromere_dict=centromere_dict,
         )
         try:
             visualize_BFB(cycle_file=f'{args.output_prefix}_amplicon{i+1}_cycles.txt',
@@ -125,7 +129,8 @@ if __name__ == "__main__":
                 cnr_file=args.cns.replace('.cns', '.cnr'),
                 output_prefix=f'{args.output_prefix}_amplicon{i+1}',
                 gene_annotation=args.gene,
-                multiple=args.multiple
+                multiple=args.multiple,
+                centromere_dict=centromere_dict,
             )
         except:
             print(f"No visualization generated for amplicon {i+1}.")

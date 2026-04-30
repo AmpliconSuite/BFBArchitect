@@ -6,5 +6,7 @@ BFBArchitect.egg-info/
 build/
 _tests/
 CLAUDE.md
+GEMINI.md
 environment.yml
 .idea/
+__pycache__/

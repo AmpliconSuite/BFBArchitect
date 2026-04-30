@@ -27,11 +27,11 @@ Homepage = "https://github.com/AmpliconSuite/BFBArchitect"
 Repository = "https://github.com/AmpliconSuite/BFBArchitect"
 
 [project.scripts]
-BFBArchitect = "src.BFBArchitect:main"
+"BFBArchitect.py" = "bfbarchitect.BFBArchitect:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["bfbarchitect*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.txt", "*.md", "*.json"]  # Include data files if needed
