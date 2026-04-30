@@ -25,16 +25,10 @@ Design thoughts:
 
 ---
 
-## 3. Simplified library invocation (next)
+## 3. Path constraints from graph files
 
-**Status:** In progress — Jens working on this
+**Status:** Future — format TBD
 
-The current graph-file library API requires callers to chain four separate calls (`find_bfb_candidate_regions` → `subsect_graph_for_region` → `trim_background_segments` → `reconstruct_bfb`) plus manual None-checking and centromere lookup. This is too much boilerplate for external tools (e.g. AmpliconClassifier).
+Some AA-format graph files include a path constraints section; others do not. The current `parse_graph_file` ignores it entirely, and the ILP has no mechanism to enforce such constraints.
 
-Proposed: a single `reconstruct_bfb_from_graph_file(graph_file, ...)` convenience wrapper that:
-1. Detects regions.
-2. Subsets + trims each region.
-3. Calls the ILP.
-4. Returns a list of `(region, BFB_strings, scores, multiplicity)` — skipping None/empty regions internally.
-
-The lower-level functions remain public for callers that need fine-grained control.
+Design thoughts: deferred until format documentation is available.
