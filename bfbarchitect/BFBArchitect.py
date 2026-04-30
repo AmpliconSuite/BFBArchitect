@@ -483,7 +483,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     logger.info(f'Total time: {time.time() - start_time} seconds')
 
 def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
-                               multiple=False, whole_graph=False):
+                               multiple=False, whole_graph=False, verbose=False):
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -517,7 +517,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
             })
     else:
         regions = find_bfb_candidate_regions(graph_fn)
-        region_data = subsect_graph_for_region(graph_fn, regions)
+        region_data = subsect_graph_for_region(graph_fn, regions, verbose=verbose)
         for region, data in zip(regions, region_data):
             if data is None:
                 continue

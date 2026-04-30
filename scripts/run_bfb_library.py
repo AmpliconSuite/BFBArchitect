@@ -20,7 +20,7 @@ from bfbarchitect import (
     CHR_CENTRO
 )
 
-def run_bfb_library(graph_file, output_prefix, multiple=False, solver=None):
+def run_bfb_library(graph_file, output_prefix, multiple=False, solver=None, verbose=False):
     """
     Demonstrate how to use the BFBArchitect library API to reconstruct BFB sequences
     from an AA-format _graph.txt file.
@@ -37,7 +37,7 @@ def run_bfb_library(graph_file, output_prefix, multiple=False, solver=None):
     print(f"Detected {len(regions)} candidate region(s): {regions}")
     
     # 2. Extract and pre-process segment data for each region
-    region_data = subsect_graph_for_region(graph_file, regions)
+    region_data = subsect_graph_for_region(graph_file, regions, verbose=verbose)
     
     for i, (region, data) in enumerate(zip(regions, region_data)):
         if data is None:
@@ -75,7 +75,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_prefix", help="Prefix for output files.", default="bfb_output")
     parser.add_argument("--multiple", action="store_true", help="Reconstruct multiple candidates.")
     parser.add_argument("--solver", help="Solver to use (gurobi or cbc).", default=None)
-    
+    parser.add_argument("--verbose", action="store_true", help="Print per-step segment transforms and CN/LF/RF vectors.")
+
     args = parser.parse_args()
-    
-    run_bfb_library(args.graph, args.output_prefix, args.multiple, args.solver)
+
+    run_bfb_library(args.graph, args.output_prefix, args.multiple, args.solver, args.verbose)
