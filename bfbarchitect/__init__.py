@@ -1,6 +1,7 @@
 from bfbarchitect.BFBArchitect import (
     reconstruct_bfb,
     reconstruct_bfb_from_graph,
+    trim_background_segments,
     write_bfb_graph,
     write_bfb_cycles,
     detect_solver,

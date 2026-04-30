@@ -259,10 +259,23 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
             logger.info(f'CN divergence score: {cn_divergence}')
 
         total_score = CN_score + fb_dist + missing_fb_score + cn_divergence
+        label = print_BFB_string(BFB_string, print_to_console=False)
+        logger.info(f'BFB string {idx+1}: {label}')
         logger.info(f'Total score: {total_score}')
+        cn_div_str = f", cn_div={cn_divergence:.4f}" if observed_cn is not None else ""
+        print(f"  BFB {idx+1}: score={total_score:.4f}  (CN={CN_score:.4f}, fb={fb_dist:.4f}, miss_fb={missing_fb_score:.4f}{cn_div_str})  {label}")
         scores.append(total_score)
 
     return scores
+
+def _add_stream_handler(logger):
+    """Attach a stdout StreamHandler to logger if none is present."""
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+               for h in logger.handlers):
+        sh = logging.StreamHandler()
+        sh.setLevel(logging.DEBUG)
+        sh.setFormatter(logging.Formatter('[%(name)s:%(levelname)s]\t%(message)s'))
+        logger.addHandler(sh)
 
 def detect_solver() -> str:
     """Return 'gurobi' if a Gurobi license and package are available, otherwise 'cbc'."""
@@ -313,19 +326,26 @@ def write_bfb_cycles(output_fn, new_segments, BFB_strings, scores, multiplicity)
         f.write('List of longest subpath constraints\n')
         for i, BFB_string in enumerate(BFB_strings):
             if not check_BFB_string(BFB_string):
-                print('Non-BFB string:')
-                print_BFB_string(BFB_string)
                 continue
-            print(f'BFB string {i+1} saved to cycles.txt file:')
-            print_BFB_string(BFB_string)
             path = [f'{seg}+' if seg > 0 else f'{-seg}-' for seg in BFB_string]
             f.write(f"Path={i+1};Copy_count=1;Segments={','.join(path)};Path_constraints_satisfied=;Score={scores[i]};Multiplicity={multiplicity}\n")
 
-def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multiple=False):
+def trim_background_segments(new_segments, cn, lf, rf):
+    """Strip leading and trailing segments with cn <= 0 (non-amplified background)."""
+    while new_segments and cn[0] <= 0:
+        new_segments, cn, lf, rf = new_segments[1:], cn[1:], lf[1:], rf[1:]
+    while new_segments and cn[-1] <= 0:
+        new_segments, cn, lf, rf = new_segments[:-1], cn[:-1], lf[:-1], rf[:-1]
+    return new_segments, cn, lf, rf
+
+def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multiple=False,
+                    verbose=False, log_file=None):
     """
     Reconstruct BFB sequences from pre-segmented copy-number and foldback data.
     """
     logger = logging.getLogger('BFBArchitect')
+    if verbose:
+        _add_stream_handler(logger)
     if solver is None:
         solver = detect_solver()
     cn0, lf0, rf0 = cn[:], lf[:], rf[:]
@@ -344,26 +364,30 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
     cn_scaled = [c / multiplicity for c in cn]
     lf_scaled = [c / multiplicity for c in lf]
     rf_scaled = [c / multiplicity for c in rf]
-    print("Reconstructing BFB sequences using ILP...")
+    print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity})...")
     if multiple:
-        BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment)
+        BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+                                                        log_file=log_file, verbose=verbose)
     elif solver == 'gurobi':
-        BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment, pool_solutions=1)
+        BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+                                                        pool_solutions=1, log_file=log_file, verbose=verbose)
     else:
         BFB_string, obj_val = reconstruct_BFB_string(cn_scaled, lf_scaled, rf_scaled, start_segment)
         BFB_strings = [BFB_string]
-    print("BFB reconstruction completed.")
     logger.info(f'ILP objective value: {obj_val}')
     scores = compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
                                observed_cn=[seg[3] - 1 for seg in new_segments])
     return BFB_strings, scores, multiplicity
 
-def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=False, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None):
+def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=False, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False):
     if solver is None:
         solver = detect_solver()
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
-    logger = create_logger('BFBArchitect', f'{output_prefix}.log')
+    log_file = f'{output_prefix}.log'
+    logger = create_logger('BFBArchitect', log_file)
+    if verbose:
+        _add_stream_handler(logger)
     start_time = time.time()
     logger.info(f'Command: python {Path(__file__).resolve()} --bam {bam_fn} --cns {cns_fn} --region {region} --output_prefix {output_prefix}' +
                  (' --segmentation' if segmentation else '') + (' --deletion' if deletion else '') + (' --coverage ' + str(coverage) if coverage != None else '') + 
@@ -454,16 +478,17 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     cn_scaled = [c / multiplicity for c in cn]
     lf_scaled = [c / multiplicity for c in lf]
     rf_scaled = [c / multiplicity for c in rf]
-    print("Reconstructing BFB sequences using ILP...")
+    print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity})...")
     if multiple:
-        BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment)
+        BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+                                                        log_file=log_file, verbose=verbose)
     else:
         if solver == 'gurobi':
-            BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment, pool_solutions=1)
+            BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+                                                            pool_solutions=1, log_file=log_file, verbose=verbose)
         else:
             BFB_string, obj_val = reconstruct_BFB_string(cn_scaled, lf_scaled, rf_scaled, start_segment)
             BFB_strings = [BFB_string]
-    print("BFB reconstruction completed.")
     logger.info(f'ILP objective value: {obj_val}')
     coverage_vals = [c for (c, _) in coverage_and_rc]
     scores = compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
@@ -483,7 +508,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     logger.info(f'Total time: {time.time() - start_time} seconds')
 
 def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
-                               multiple=False, whole_graph=False, verbose=False):
+                               multiple=False, whole_graph=False, verbose=False, log_file=None):
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -502,12 +527,14 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
         new_segments, cn, lf, rf, svs_list, sv_info, primary_chrom = whole_graph_as_region(
             graph_fn, centromere_dict=centromere_dict)
         if new_segments:
+            region = (primary_chrom, new_segments[0][1], new_segments[-1][2])
+            print(f'Processing whole graph as single region: {region[0]}:{region[1]}-{region[2]}')
             BFB_strings, scores, multiplicity = reconstruct_bfb(
                 new_segments, cn, lf, rf,
                 centromere_dict.get(primary_chrom, 0),
-                solver=solver, multiple=multiple)
+                solver=solver, multiple=multiple, verbose=verbose, log_file=log_file)
             results.append({
-                'region': (primary_chrom, new_segments[0][1], new_segments[-1][2]),
+                'region': region,
                 'new_segments': new_segments,
                 'bfb_strings': BFB_strings,
                 'scores': scores,
@@ -517,26 +544,25 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
             })
     else:
         regions = find_bfb_candidate_regions(graph_fn)
+        if not regions:
+            print('No BFB candidate regions found in the graph file.')
+            return results
+        print(f'Found {len(regions)} BFB candidate region(s): '
+              + ', '.join(f'{r[0]}:{r[1]}-{r[2]}' for r in regions))
         region_data = subsect_graph_for_region(graph_fn, regions, verbose=verbose)
-        for region, data in zip(regions, region_data):
+        for i, (region, data) in enumerate(zip(regions, region_data)):
             if data is None:
                 continue
             new_segments, cn, lf, rf, region_svs, sv_info = data
             chrom = region[0]
-            centro = centromere_dict.get(chrom)
-            if new_segments:
-                if centro is None or new_segments[-1][2] < centro:
-                    new_segments = new_segments[1:]
-                    cn, lf, rf = cn[1:], lf[1:], rf[1:]
-                else:
-                    new_segments = new_segments[:-1]
-                    cn, lf, rf = cn[:-1], lf[:-1], rf[:-1]
+            new_segments, cn, lf, rf = trim_background_segments(new_segments, cn, lf, rf)
             if not new_segments:
                 continue
+            print(f'\nProcessing region {i+1}: {chrom}:{region[1]}-{region[2]}')
             BFB_strings, scores, multiplicity = reconstruct_bfb(
                 new_segments, cn, lf, rf,
                 centromere_dict.get(chrom, 0),
-                solver=solver, multiple=multiple)
+                solver=solver, multiple=multiple, verbose=verbose, log_file=log_file)
             results.append({
                 'region': region,
                 'new_segments': new_segments,
@@ -549,7 +575,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
     return results
 
 def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
-                       whole_graph=False, gene=None, centromere_dict=None):
+                       whole_graph=False, gene=None, centromere_dict=None, verbose=False):
     """
     CLI entry point to reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -559,21 +585,19 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
         from BFBVisualizer import visualize_BFB
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
-    logger = create_logger('BFBArchitect', f'{output_prefix}.log')
+    log_file = f'{output_prefix}.log'
+    logger = create_logger('BFBArchitect', log_file)
+    if verbose:
+        _add_stream_handler(logger)
     start_time = time.time()
     results = reconstruct_bfb_from_graph(
         graph_fn, centromere_dict=centromere_dict, solver=solver,
-        multiple=multiple, whole_graph=whole_graph
+        multiple=multiple, whole_graph=whole_graph, verbose=verbose, log_file=log_file
     )
     if not results:
-        print('No BFB candidate regions found in the graph file.')
         return
-    print(f'Found {len(results)} BFB candidate region(s): '
-          + ', '.join(f"{r['region'][0]}:{r['region'][1]}-{r['region'][2]}" for r in results))
     for i, res in enumerate(results):
         region_prefix = output_prefix if whole_graph else f'{output_prefix}_region{i + 1}'
-        chrom, start, end = res['region']
-        print(f'\nProcessing region {i + 1}: {chrom}:{start}-{end}')
         write_bfb_graph(f'{region_prefix}_BFB_graph.txt', res['new_segments'], res['svs'], res['sv_info'])
         write_bfb_cycles(f'{region_prefix}_BFB_cycles.txt', res['new_segments'], res['bfb_strings'], res['scores'], res['multiplicity'])
         print(f'Generated {region_prefix}_BFB_graph.txt and {region_prefix}_BFB_cycles.txt')
@@ -606,12 +630,13 @@ def main():
     parser.add_argument("--multiple", help="Reconstruct multiple BFB candidates", action='store_true')
     parser.add_argument("--solver", help="ILP solver to use.", default=None)
     parser.add_argument("--centromere", help="Path to a BED file of centromere regions.", default=None)
+    parser.add_argument("--verbose", help="Print all log messages to stdout in addition to the log file.", action='store_true')
     args = parser.parse_args()
     centromere_dict = build_centromere_dict(args.centromere)
     if args.graph:
-        run_bfb_from_graph(args.graph, args.output_prefix, args.multiple, args.solver, args.whole_graph, args.gene, centromere_dict)
+        run_bfb_from_graph(args.graph, args.output_prefix, args.multiple, args.solver, args.whole_graph, args.gene, centromere_dict, verbose=args.verbose)
     elif args.bam and args.cns and args.region:
-        reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict)
+        reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict, verbose=args.verbose)
     else:
         parser.error("Provide either --graph or all of --bam, --cns, --region.")
 

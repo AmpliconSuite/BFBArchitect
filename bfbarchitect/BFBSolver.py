@@ -6,7 +6,6 @@ def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
     model = LpProblem(name="BFB_reconstruction", sense=LpMinimize)
     
     T = round(max(sum(L) + sum(R) + 1, max(C)))
-    print('Total time points:', T)
     # Initialize binary variables for consecutive-sequences
     segment_num = len(C)
     cs = {}
@@ -149,7 +148,7 @@ def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
             model += (cs[f'{s}_{t2}'] <= total_sc, f'constraint_cs_sc_{s}_{t2}')
     
     # Solve the problem
-    status = model.solve(PULP_CBC_CMD(timeLimit=max_time, threads=max_threads,  options=["RandomS 42"]))
+    status = model.solve(PULP_CBC_CMD(timeLimit=max_time, threads=max_threads, msg=0, options=["RandomS 42"]))
     # print(f'Objective: {model.objective.value()}')
 
     # Get consecutive-sequences added at each time point (all cs = 1)
@@ -172,9 +171,15 @@ def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
         BFB_string += segment
     return BFB_string, model.objective.value()
 
-def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50):
-    # Build model
-    m = gp.Model("BFB_reconstruction")
+def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50, log_file=None, verbose=False):
+    # Build model with a configured environment so Gurobi messages go to log and/or stdout as requested
+    env = gp.Env(empty=True)
+    env.setParam('OutputFlag', 1 if (log_file or verbose) else 0)
+    env.setParam('LogToConsole', 1 if verbose else 0)
+    if log_file:
+        env.setParam('LogFile', log_file)
+    env.start()
+    m = gp.Model("BFB_reconstruction", env=env)
     m.Params.TimeLimit = max_time
     m.Params.Threads = max_threads
 
@@ -187,7 +192,6 @@ def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_so
 
     segment_num = len(C)
     T = round(max(sum(L) + sum(R) + 1, max(C)))
-    print("Total time points:", T)
 
     # Variables
     cs = {}  # consecutive-sequence binary vars: cs[i_j_d_t]
