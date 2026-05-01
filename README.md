@@ -89,6 +89,7 @@ BFBArchitect.py --graph <AA_graph.txt> --whole_graph --output_prefix <dir/output
 ### Optional arguments (both modes)
 - --multiple: Reconstruct multiple optimal BFB candidate sequences (requires Gurobi)
 - --solver gurobi|cbc: ILP solver to use (default: autodetect)
+- -t / --threads <int>: Number of threads for the ILP solver (default: 8)
 - --region <string>: (graph mode) process a specific region only, bypassing auto-detection (e.g. chr7:120000000-125000000). Mutually exclusive with --whole_graph.
 - --whole_graph: (graph mode only) treat all segments as a single region instead of auto-detecting BFB regions
 - -g / --gene <gtf_file>: Gene annotation for visualization (graph mode only)
@@ -167,6 +168,8 @@ centromere_dict = build_centromere_dict()
 results = reconstruct_bfb_from_graph(
     'path/to/sample_graph.txt',
     centromere_dict=centromere_dict,
+    threads=8,    # Optional: number of ILP solver threads (default: 8)
+    silent=True   # Optional: suppress terminal output/logs
 )
 # results is a list of dicts, one per detected BFB region
 
@@ -209,6 +212,7 @@ chrom = new_segments[0][0]
 BFB_strings, scores, multiplicity = reconstruct_bfb(
     new_segments, cn, lf, rf,
     centromere_dict.get(chrom, 0),
+    threads=8,  # Optional: number of ILP solver threads (default: 8)
 )
 write_bfb_graph(prefix + '_graph.txt', new_segments, SVs, sv_info)
 write_bfb_cycles(prefix + '_cycles.txt', new_segments, BFB_strings, scores, multiplicity)
