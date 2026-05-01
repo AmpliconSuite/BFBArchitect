@@ -9,12 +9,12 @@ from pathlib import Path
 
 try:
     from bfbarchitect.SVCaller import call_SVs
-    from bfbarchitect.BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
+    from bfbarchitect.BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
     from bfbarchitect.datatypes import CHR_CENTRO, build_centromere_dict
     from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
 except:
     from SVCaller import call_SVs
-    from BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
+    from BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
     from datatypes import CHR_CENTRO, build_centromere_dict
     from utils import create_logger, get_coverage_and_rc, get_normal_coverage, get_chrom_length
 
@@ -399,13 +399,13 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         if not silent:
             print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity})...")
         if multiple:
-            BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+            BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                             max_threads=threads, log_file=log_file, verbose=verbose if not silent else False)
         elif solver == 'gurobi':
-            BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+            BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                             pool_solutions=1, max_threads=threads, log_file=log_file, verbose=verbose if not silent else False)
         else:
-            BFB_string, obj_val = reconstruct_BFB_string(cn_scaled, lf_scaled, rf_scaled, start_segment,
+            BFB_string, obj_val = reconstruct_BFB_cbc(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                           max_threads=threads)
             BFB_strings = [BFB_string]
         logger.info(f'ILP objective value: {obj_val}')
@@ -517,14 +517,17 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     rf_scaled = [c / multiplicity for c in rf]
     print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity})...")
     if multiple:
-        BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+        BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                         max_threads=threads, log_file=log_file, verbose=verbose)
     else:
         if solver == 'gurobi':
-            BFB_strings, obj_val = reconstruct_BFB_strings(cn_scaled, lf_scaled, rf_scaled, start_segment,
+            BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                             pool_solutions=1, max_threads=threads, log_file=log_file, verbose=verbose)
+        elif solver == 'mosek':
+            BFB_strings, obj_val = reconstruct_BFB_mosek(cn_scaled, lf_scaled, rf_scaled, start_segment,
+                                                        max_threads=threads, log_file=log_file, verbose=verbose)
         else:
-            BFB_string, obj_val = reconstruct_BFB_string(cn_scaled, lf_scaled, rf_scaled, start_segment,
+            BFB_string, obj_val = reconstruct_BFB_cbc(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                           max_threads=threads)
             BFB_strings = [BFB_string]
     logger.info(f'ILP objective value: {obj_val}')
@@ -691,7 +694,7 @@ def main():
     parser.add_argument("--min_mapq", type=int, default=20, help="Minimum mapping quality for SV calling.")
     parser.add_argument("--output_prefix", help="Prefix of output files.", required=True)
     parser.add_argument("--multiple", help="Reconstruct multiple BFB candidates", action='store_true')
-    parser.add_argument("--solver", help="ILP solver to use.", default=None)
+    parser.add_argument("--solver", help="ILP solver to use. Options: gurobi (defualt), mosek, and cbc", default=None)
     parser.add_argument("-t", "--threads", type=int, default=8, help="Number of threads for the ILP solver (default: 8).")
     parser.add_argument("--centromere", help="Path to a BED file of centromere regions.", default=None)
     parser.add_argument("--verbose", help="Print all log messages to stdout in addition to the log file.", action='store_true')
