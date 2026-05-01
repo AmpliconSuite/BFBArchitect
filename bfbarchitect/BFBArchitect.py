@@ -10,22 +10,46 @@ from pathlib import Path
 try:
     from bfbarchitect.SVCaller import call_SVs
     from bfbarchitect.BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
-    from bfbarchitect.datatypes import CHR_CENTRO, CHR_SIZES, build_centromere_dict
-    from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc
+    from bfbarchitect.datatypes import CHR_CENTRO, build_centromere_dict
+    from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
 except:
     from SVCaller import call_SVs
     from BFBSolver import reconstruct_BFB_string, reconstruct_BFB_strings, check_BFB_string, print_BFB_string
-    from datatypes import CHR_CENTRO, CHR_SIZES, build_centromere_dict
-    from utils import create_logger, get_coverage_and_rc, get_normal_coverage
+    from datatypes import CHR_CENTRO, build_centromere_dict
+    from utils import create_logger, get_coverage_and_rc, get_normal_coverage, get_chrom_length
+
+
+def _lookup_chrom(d, chrom, label):
+    """Dict lookup with an informative error when the chromosome is missing.
+
+    GRCh37/hg19 data uses bare chromosome names (e.g. '7') while the
+    built-in reference tables use 'chr'-prefixed names (e.g. 'chr7').
+    If a lookup fails, direct the user to supply a matching BED file.
+    """
+    try:
+        return d[chrom]
+    except KeyError:
+        raise KeyError(
+            f"Chromosome '{chrom}' not found in {label}. "
+            "If using GRCh37/hg19 chromosome naming (without the 'chr' prefix), "
+            "supply a matching centromere BED file via --centromere."
+        ) from None
 
 def expand_amplicon_region(bam_fn, normal_cov, region, CN_threshold=2, size=100000, centromere_dict=None):
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
     chrom, start, end = region
-    if end <= centromere_dict[chrom]:
-        left_bound, right_bound = 0, centromere_dict[chrom]
+    centro = _lookup_chrom(centromere_dict, chrom, 'centromere data')
+    if end <= centro:
+        left_bound, right_bound = 0, centro
     else:
-        left_bound, right_bound = centromere_dict[chrom], CHR_SIZES[chrom]
+        chr_size = get_chrom_length(bam_fn, chrom)
+        if chr_size is None:
+            raise KeyError(
+                f"Chromosome '{chrom}' not found in BAM header. "
+                "Check that --region uses the same chromosome naming as the BAM file."
+            )
+        left_bound, right_bound = centro, chr_size
     left = start
     while left-size >= left_bound and start - left < 100*size:
         coverage, _ = get_coverage_and_rc(bam_fn, (chrom, left-size, left))
@@ -100,7 +124,7 @@ def segment_region(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50000, 
         boundaries.sort(key=abs)
         if is_BFB_region and bkps:
             max_pos = max([abs(bkp) for bkp in bkps])
-            p_arm = max_pos < centromere_dict[chrom]
+            p_arm = max_pos < _lookup_chrom(centromere_dict, chrom, 'centromere data')
             i = 0
             while p_arm and boundaries[i] not in bkps:
                 i += 1
@@ -465,7 +489,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
                 rf[i] += round(2*count/normal_cov)
     cn0, lf0, rf0 = cn[:], lf[:], rf[:]
     max_pos = max(l_bp + r_bp)
-    start_segment = -len(segments) if max_pos < centromere_dict[chrom] else 1
+    start_segment = -len(segments) if max_pos < _lookup_chrom(centromere_dict, chrom, 'centromere data') else 1
     multiplicity = 1
     cn_bound = 15 if solver == 'gurobi' else 12
     while max(cn)/multiplicity > cn_bound or (sum(lf0) + sum(rf0) + 1)/multiplicity > cn_bound:

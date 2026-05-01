@@ -53,6 +53,13 @@ def get_normal_coverage(cns_fn, bam_fn):
     normal_cov = total_bases / total_length if total_length > 0 else 0
     return normal_cov
 
+def get_chrom_length(bam_fn, chrom):
+    """Return the length of chrom from the BAM header, or None if not present."""
+    with pysam.AlignmentFile(bam_fn, 'rb') as bam:
+        lengths = dict(zip(bam.references, bam.lengths))
+    return lengths.get(chrom)
+
+
 def get_coverage_and_rc(bam_fn, interval, qc_threshold=0):
     total_length, total_bases = 0, 0
     bam = pysam.AlignmentFile(bam_fn, "rb")

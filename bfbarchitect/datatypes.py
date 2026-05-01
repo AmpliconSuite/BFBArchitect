@@ -1,34 +1,34 @@
 # Map a strand to its opposite strand
 REVERSE_STRAND = {"+": "-", "-": "+"}
 
-# Sorted chromosome names
-CHR_TO_IDX = {
-    "chr1": 0,
-    "chr2": 1,
-    "chr3": 2,
-    "chr4": 3,
-    "chr5": 4,
-    "chr6": 5,
-    "chr7": 6,
-    "chr8": 7,
-    "chr9": 8,
-    "chr10": 9,
-    "chr11": 10,
-    "chr12": 11,
-    "chr13": 12,
-    "chr14": 13,
-    "chr15": 14,
-    "chr16": 15,
-    "chr17": 16,
-    "chr18": 17,
-    "chr19": 18,
-    "chr20": 19,
-    "chr21": 20,
-    "chr22": 21,
-    "chrX": 22,
-    "chrY": 23,
-    "chrM": 24,
-}
+
+def chrom_sort_key(chrom: str) -> tuple:
+    """Return a sort key for a chromosome name, prefix-agnostic.
+
+    Works for any organism: numeric autosomes sort by number, sex/mito
+    chromosomes sort after, unrecognised contigs sort last.
+    Handles both 'chr7' and '7' identically.
+    """
+    name = chrom[3:] if chrom.startswith('chr') else chrom
+    _tail = {'X': 9000, 'Y': 9001, 'M': 9002, 'MT': 9002}
+    if name in _tail:
+        return (_tail[name],)
+    try:
+        return (int(name),)
+    except ValueError:
+        return (99999,)
+
+
+def chrom_in_dict(d: dict, chrom: str) -> bool:
+    """Return True if chrom (or its chr-prefix-toggled form) is a key in d.
+
+    Use this to check chromosome validity against reference data rather than
+    maintaining a separate hard-coded list of valid names.
+    """
+    if chrom in d:
+        return True
+    alt = chrom[3:] if chrom.startswith('chr') else 'chr' + chrom
+    return alt in d
 
 CHR_SIZES = {
     "chr1": 248956422,
@@ -150,8 +150,8 @@ class SV:
         self.sort_breakpoints()
     
     def sort_breakpoints(self) -> None:
-        if CHR_TO_IDX[self.chrom1] > CHR_TO_IDX[self.chrom2] or \
-            (CHR_TO_IDX[self.chrom1] == CHR_TO_IDX[self.chrom2] and self.bp1 > self.bp2):
+        if chrom_sort_key(self.chrom1) > chrom_sort_key(self.chrom2) or \
+            (chrom_sort_key(self.chrom1) == chrom_sort_key(self.chrom2) and self.bp1 > self.bp2):
             self.chrom1, self.chrom2 = self.chrom2, self.chrom1
             self.bp1, self.bp2 = self.bp2, self.bp1
             self.strand1, self.strand2 = self.strand2, self.strand1

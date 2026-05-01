@@ -4,10 +4,10 @@ import re
 import argparse
 
 try:
-    from bfbarchitect.datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
+    from bfbarchitect.datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
     from bfbarchitect.utils import get_normal_coverage, get_coverage_and_rc
 except:
-    from datatypes import CigarAlignment, SV, REVERSE_STRAND, CHR_TO_IDX
+    from datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
     from utils import get_normal_coverage, get_coverage_and_rc
 
 def query_ends_from_cigar(cigar_str: str, strand: str) -> tuple[int, int, int]:
@@ -73,7 +73,7 @@ def cluster_SVs(SVs, max_bp_distance = 100):
             if sv1.is_equal(sv2, max_bp_distance = max_bp_distance) == True:
                 clustered_sv[sv1] += read_list2
                 sv_list[j][1].clear()
-    clustered_sv = dict(sorted(clustered_sv.items(), key=lambda item: (CHR_TO_IDX[item[0].chrom1], item[0].bp1)))
+    clustered_sv = dict(sorted(clustered_sv.items(), key=lambda item: (chrom_sort_key(item[0].chrom1), item[0].bp1)))
     return clustered_sv
 
 def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, normal_cov=10, min_cn=0.75):
@@ -101,7 +101,7 @@ def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, 
             primary_start = primary_pos + ref_length - 1
             primary_end = primary_pos
         mapping_quality, edit_dist = float(read.mapping_quality), float(read.get_tag("NM"))/(read_end-read_start)
-        if primary_chrom in CHR_TO_IDX and mapping_quality >= min_mapq and ref_length >= min_ref_length:
+        if chrom_sort_key(primary_chrom)[0] < 99999 and mapping_quality >= min_mapq and ref_length >= min_ref_length:
             alignment = CigarAlignment(primary_chrom, primary_start, primary_end, primary_strand, \
                                    ref_length, read.query_name, read_start, read_end, mapping_quality, edit_dist)
             if alignment not in alignments[read.query_name]:
@@ -118,7 +118,7 @@ def call_SVs(bam_file, region, min_mapq=20, min_ref_length=100, output_fn=None, 
             sa_cigar = sa_info[3]
             (read_start, read_end, ref_length) = query_ends_from_cigar(sa_cigar, sa_strand)
             mapping_quality, edit_dist = float(sa_info[4]), float(sa_info[-1])/(read_end-read_start)
-            if sa_chrom not in CHR_TO_IDX or mapping_quality < min_mapq or ref_length < min_ref_length:
+            if chrom_sort_key(sa_chrom)[0] >= 99999 or mapping_quality < min_mapq or ref_length < min_ref_length:
                 continue
             if sa_strand == "+":
                 sa_start = sa_pos

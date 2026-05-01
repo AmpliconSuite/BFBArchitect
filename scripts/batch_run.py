@@ -3,14 +3,14 @@ import sys
 import argparse
 
 try:
-    from bfbarchitect.datatypes import SV, CHR_TO_IDX, build_centromere_dict
+    from bfbarchitect.datatypes import SV, chrom_sort_key, build_centromere_dict
     from bfbarchitect.BFBArchitect import reconstruct_BFB
     from bfbarchitect.BFBVisualizer import visualize_BFB
 except ImportError:
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-    from bfbarchitect.datatypes import SV, CHR_TO_IDX, build_centromere_dict
+    from bfbarchitect.datatypes import SV, chrom_sort_key, build_centromere_dict
     from bfbarchitect.BFBArchitect import reconstruct_BFB
     from bfbarchitect.BFBVisualizer import visualize_BFB
 
@@ -70,14 +70,14 @@ def cluster_foldbacks(foldbacks, distance_threshold=5000000):
             unclustered_foldbacks.remove(closest_sv)
             current_cluster.append(closest_sv)
         else:
-            current_cluster.sort(key=lambda sv: (CHR_TO_IDX[sv.chrom1], sv.bp1))
+            current_cluster.sort(key=lambda sv: (chrom_sort_key(sv.chrom1), sv.bp1))
             clusters.append(current_cluster)
             current_cluster = []
     if current_cluster:
-        current_cluster.sort(key=lambda sv: (CHR_TO_IDX[sv.chrom1], sv.bp1))
+        current_cluster.sort(key=lambda sv: (chrom_sort_key(sv.chrom1), sv.bp1))
         clusters.append(current_cluster)
     # sort clusters by the position of the first SV in each cluster
-    clusters.sort(key=lambda cluster: (CHR_TO_IDX[cluster[0].chrom1], cluster[0].bp1))
+    clusters.sort(key=lambda cluster: (chrom_sort_key(cluster[0].chrom1), cluster[0].bp1))
     return clusters
 
 if __name__ == "__main__":
