@@ -34,14 +34,13 @@ def _merge_similar_segments(segs, gap_cutoff, cn_tol):
     return [(g[0][0], g[-1][1], _weighted_avg_cn(g)) for g in groups]
 
 
-def _find_gap_index(fb_p1, fb_p2, segs):
+def _find_gap_index(point, segs):
     """
-    Return index i such that the foldback midpoint falls in the gap
+    Return index i such that point falls in the gap
     [segs[i].end, segs[i+1].start]. Returns None if no such gap exists.
     """
-    fb_mid = (fb_p1 + fb_p2) / 2.0
     for i in range(len(segs) - 1):
-        if segs[i][1] <= fb_mid <= segs[i + 1][0]:
+        if segs[i][1] <= point <= segs[i + 1][0]:
             return i
     return None
 
@@ -89,7 +88,7 @@ def parse_graph_file(graph_file):
 # ── BFB candidate region detection ───────────────────────────────────────────
 
 def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_size=10000,
-                                fb_dist_cut=25000, merge_gap=50000, merge_cn_tol=0.5,
+                                fb_dist_cut=50000, merge_gap=50000, merge_cn_tol=0.5,
                                 min_cn_step=0.5, merge_padding=150000):
     """
     Identify BFB-like candidate regions from an AA breakpoint graph file.
@@ -114,7 +113,7 @@ def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_
     min_boundary_seg_size : int
         Minimum bp for first/last segment per chromosome (default 10000).
     fb_dist_cut : int
-        Max distance between foldback SV endpoints (default 25000).
+        Max distance between foldback SV endpoints (default 50000).
     merge_gap : int
         Max gap in bp between segments to merge (default 50000).
     merge_cn_tol : float
@@ -181,24 +180,19 @@ def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_
 
             for fba in fb_pp:
                 for fbb in fb_mm:
-                    mid_a = (fba[0] + fba[1]) / 2.0
-                    mid_b = (fbb[0] + fbb[1]) / 2.0
-                    fb_left  = fba if mid_a <= mid_b else fbb
-                    fb_right = fbb if mid_a <= mid_b else fba
+                    gap_a = _find_gap_index(fba[0], segs)  # ++ foldback: use bp1
+                    gap_b = _find_gap_index(fbb[1], segs)  # -- foldback: use bp2
 
-                    gap_l = _find_gap_index(fb_left[0],  fb_left[1],  segs)
-                    gap_r = _find_gap_index(fb_right[0], fb_right[1], segs)
-
-                    if gap_l is None or gap_r is None:
+                    if gap_a is None or gap_b is None:
                         continue
+                    gap_l, gap_r = min(gap_a, gap_b), max(gap_a, gap_b)
                     if gap_r != gap_l + 1:
                         continue
 
-                    outer_l = gap_l
                     outer_r = gap_r + 1
                     if outer_r >= n:
                         continue
-                    candidates.append((chrom, segs[outer_l][0], segs[outer_r][1]))
+                    candidates.append((chrom, segs[gap_l][0], segs[outer_r][1]))
 
     if not candidates:
         return []
