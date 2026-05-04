@@ -1,8 +1,4 @@
 from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
-import gurobipy as gp
-from gurobipy import GRB
-import mosek
-from mosek.fusion import *
 import sys
 
 def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
@@ -175,6 +171,8 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
     return BFB_string, model.objective.value()
 
 def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50, log_file=None, verbose=False):
+    import gurobipy as gp
+    from gurobipy import GRB
     # Build model with a configured environment so Gurobi messages go to log and/or stdout as requested
     env = gp.Env(empty=True)
     env.setParam('OutputFlag', 1 if (log_file or verbose) else 0)
@@ -405,6 +403,8 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
     return solutions, obj_value
 
 def reconstruct_BFB_mosek(C, L, R, start, max_time=900, max_threads=8, log_file=None, verbose=False):
+    import mosek
+    from mosek.fusion import Model, Domain, Expr, ObjectiveSense
     """
     Reconstruct BFB using MOSEK optimization solver.
     

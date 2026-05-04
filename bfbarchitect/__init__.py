@@ -6,6 +6,7 @@ from bfbarchitect.BFBArchitect import (
     write_bfb_cycles,
     detect_solver,
 )
+from bfbarchitect.BFBVisualizer import visualize_BFB
 from bfbarchitect.datatypes import SV, CHR_CENTRO, CHR_SIZES, chrom_sort_key, chrom_in_dict, load_centromere_bed, build_centromere_dict
 from bfbarchitect.graph_input import (
     find_bfb_candidate_regions,
