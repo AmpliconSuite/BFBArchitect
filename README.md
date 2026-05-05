@@ -158,7 +158,7 @@ BFBArchitect can be imported directly to reconstruct BFB sequences from Python w
 ### From a graph file
 
 ```python
-from bfbarchitect import reconstruct_bfb_from_graph, write_bfb_graph, write_bfb_cycles
+from bfbarchitect import reconstruct_bfb_from_graph, write_bfb_graph, write_bfb_cycles, visualize_BFB
 from bfbarchitect import build_centromere_dict
 
 # hg38 defaults; supply a BED file for another assembly:
@@ -175,16 +175,21 @@ results = reconstruct_bfb_from_graph(
 
 for r in results:
     chrom, start, end = r['region']
+    prefix = f'{chrom}_{start}'
     print(f"Region {chrom}:{start}-{end}")
-    # r['new_segments']: list of (chrom, start, end, cn_float, coverage, read_count)
-    for seg in r['new_segments']:
-        print(f"  Segment {seg[0]}:{seg[1]}-{seg[2]}  CN={seg[3]:.2f}")
-    for i, (bfb, score) in enumerate(zip(r['bfb_strings'], r['scores'])):
-        print(f"  BFB candidate {i+1}: score={score:.4f}  path={bfb}")
-    # Optionally write output files:
-    write_bfb_graph(f'{chrom}_{start}_graph.txt', r['new_segments'], r['svs'], r['sv_info'])
-    write_bfb_cycles(f'{chrom}_{start}_cycles.txt', r['new_segments'],
+    
+    # Optionally write output files and visualize:
+    write_bfb_graph(f'{prefix}_graph.txt', r['new_segments'], r['svs'], r['sv_info'])
+    write_bfb_cycles(f'{prefix}_cycles.txt', r['new_segments'],
                      r['bfb_strings'], r['scores'], r['multiplicity'])
+    
+    # Generate the visualization PDF/PNG
+    visualize_BFB(
+        cycle_file=f"{prefix}_cycles.txt",
+        graph_file=f"{prefix}_graph.txt",
+        cnr_file=None,  # or path to .cnr for scatter plot
+        output_prefix=f"{prefix}_BFB"
+    )
 ```
 
 Each result dict contains:
@@ -201,7 +206,7 @@ Each result dict contains:
 ### From pre-segmented data
 
 ```python
-from bfbarchitect import reconstruct_bfb, write_bfb_graph, write_bfb_cycles
+from bfbarchitect import reconstruct_bfb, write_bfb_graph, write_bfb_cycles, visualize_BFB
 from bfbarchitect import build_centromere_dict
 
 centromere_dict = build_centromere_dict()
@@ -214,8 +219,12 @@ BFB_strings, scores, multiplicity = reconstruct_bfb(
     centromere_dict.get(chrom, 0),
     threads=8,  # Optional: number of ILP solver threads (default: 8)
 )
+
+# Optionally write output files and visualize:
+prefix = "my_sample"
 write_bfb_graph(prefix + '_graph.txt', new_segments, SVs, sv_info)
 write_bfb_cycles(prefix + '_cycles.txt', new_segments, BFB_strings, scores, multiplicity)
+visualize_BFB(prefix + '_cycles.txt', prefix + '_graph.txt', None, prefix)
 ```
 
 ## Contact

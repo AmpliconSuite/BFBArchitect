@@ -15,6 +15,7 @@ from bfbarchitect import (
     reconstruct_bfb_from_graph,
     write_bfb_graph,
     write_bfb_cycles,
+    visualize_BFB,
 )
 
 def _parse_region(region_str):
@@ -46,9 +47,22 @@ def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
 
     for i, res in enumerate(results):
         region_prefix = output_prefix if (whole_graph or region is not None) else f"{output_prefix}_region{i+1}"
-        write_bfb_graph(f"{region_prefix}_graph.txt", res['new_segments'], res['svs'], res['sv_info'])
-        write_bfb_cycles(f"{region_prefix}_cycles.txt", res['new_segments'], res['bfb_strings'], res['scores'], res['multiplicity'])
-        print(f"  Written: {region_prefix}_graph.txt, {region_prefix}_cycles.txt")
+        graph_out = f"{region_prefix}_graph.txt"
+        cycle_out = f"{region_prefix}_cycles.txt"
+        
+        write_bfb_graph(graph_out, res['new_segments'], res['svs'], res['sv_info'])
+        write_bfb_cycles(cycle_out, res['new_segments'], res['bfb_strings'], res['scores'], res['multiplicity'])
+        print(f"  Written: {graph_out}, {cycle_out}")
+
+        # Optional visualization
+        print(f"  Visualizing {region_prefix}...")
+        visualize_BFB(
+            cycle_file=cycle_out,
+            graph_file=graph_out,
+            cnr_file=None,
+            output_prefix=f"{region_prefix}_BFB",
+            multiple=multiple
+        )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Invoke BFBArchitect library API on a graph file.")

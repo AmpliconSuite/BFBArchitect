@@ -309,13 +309,24 @@ def _add_stream_handler(logger):
         logger.addHandler(sh)
 
 def detect_solver() -> str:
-    """Return 'gurobi' if a Gurobi license and package are available, otherwise 'cbc'."""
-    if os.path.exists(os.path.expanduser('~/gurobi.lic')):
-        try:
-            import gurobipy  # noqa: F401
+    """Return 'gurobi' if a Gurobi license and package are available,
+    otherwise 'mosek' if available, otherwise 'cbc'."""
+    # 1. Gurobi
+    try:
+        import gurobipy  # noqa: F401
+        if os.path.exists(os.path.expanduser('~/gurobi.lic')):
             return 'gurobi'
-        except ImportError:
-            pass
+    except ImportError:
+        pass
+
+    # 2. MOSEK
+    try:
+        import mosek  # noqa: F401
+        if os.path.exists(os.path.expanduser('~/mosek/mosek.lic')):
+            return 'mosek'
+    except ImportError:
+        pass
+
     return 'cbc'
 
 def write_bfb_graph(output_fn, new_segments, SVs, sv_info):
@@ -408,6 +419,9 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         elif solver == 'gurobi':
             BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                             pool_solutions=1, max_threads=threads, log_file=log_file, verbose=verbose if not silent else False)
+        elif solver == 'mosek':
+            BFB_strings, obj_val = reconstruct_BFB_mosek(cn_scaled, lf_scaled, rf_scaled, start_segment,
+                                                        max_threads=threads, log_file=log_file, verbose=verbose if not silent else False)
         else:
             BFB_string, obj_val = reconstruct_BFB_cbc(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                           max_threads=threads)
