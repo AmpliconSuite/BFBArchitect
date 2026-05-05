@@ -27,12 +27,8 @@ def parse_segment_coordinates(file_dir, seg_num):
                 name = chr(ord('A') + cnt)
                 cnt += 1
                 chrom =  line[1].split(':')[0]
-                # if chrom != 'chr13':
-                #     continue
                 start = int(line[1].split(':')[1][:-1])
                 end = int(line[2].split(':')[1][:-1])
-                # if not (107462692 <= start and end <= 107617365):
-                #     continue
                 cn = float(line[3])
                 segments_coordinates[name] = {'chrom':chrom, 'start':start, 'end':end,'cn':cn}
                 if len(segments_coordinates) == seg_num:

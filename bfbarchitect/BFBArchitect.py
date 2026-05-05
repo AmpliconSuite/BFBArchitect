@@ -249,13 +249,13 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
         rf = [c * multiplicity for c in rf]
 
         # 1. CN discrepancy score (predicted integer CN vs expected integer CN)
-        CN_score = sum(abs(cn0[i] - cn[i]) / cn[i] if cn[i] > 0 else abs(cn0[i] - cn[i])
+        cn_score = sum(abs(cn0[i] - cn[i]) / cn[i] if cn[i] > 0 else abs(cn0[i] - cn[i])
                        for i in range(len(cn)))
         if normal_cov is not None and normal_cov < 7:
-            CN_score *= 0.5
-            logger.info(f'CN discrepancy (weight = 0.5 due to low coverage): {CN_score}')
+            cn_score *= 0.5
+            logger.info(f'CN discrepancy (weight = 0.5 due to low coverage): {cn_score}')
         else:
-            logger.info(f'CN discrepancy: {CN_score}')
+            logger.info(f'CN discrepancy: {cn_score}')
 
         # 2. Foldback Euclidean distance
         fb_dist = sum((lf0[i] - lf[i])**2 + (rf0[i] - rf[i])**2 for i in range(len(cn0)))**0.5 / len(cn0)
@@ -273,24 +273,28 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
             if rf0[i] == 0 and rf[i] != 0:
                 missing_fb_score += 0.5 * rf[i]
         fb_count = sum(1 for x in lf0 if x > 0) + sum(1 for x in rf0 if x > 0)
-        if fb_count < 2 or len(cn0) < 2:
+        if fb_count < 2:
             missing_fb_score += 2
-        logger.info(f'Missing foldback score: {missing_fb_score}')
+        logger.info(f'Missing foldback score: {missing_fb_score}' + 
+                    (f' (add penalty of 2 for foldback count < 2)' if fb_count < 2 else ''))
 
         # 4. CN divergence score (observed float CN vs expected integer CN)
         cn_divergence = 0
         if observed_cn is not None:
             cn_divergence = sum(abs(observed_cn[i] - cn0[i]) / cn0[i]
                                for i in range(len(cn0)) if cn0[i] > 0)
-            logger.info(f'CN divergence score: {cn_divergence}')
+        if len(cn0) < 2:
+            cn_divergence += 2
+        logger.info(f'CN divergence score: {cn_divergence}' + 
+                    (f' (add penalty of 2 for segment count < 2)' if len(cn0) < 2 else ''))
 
-        total_score = CN_score + fb_dist + missing_fb_score + cn_divergence
+        total_score = cn_score + fb_dist + missing_fb_score + cn_divergence
         label = print_BFB_string(BFB_string, print_to_console=False)
         logger.info(f'BFB string {idx+1}: {label}')
         logger.info(f'Total score: {total_score}')
         cn_div_str = f", cn_div={cn_divergence:.4f}" if observed_cn is not None else ""
         if not silent:
-            print(f"  BFB {idx+1}: score={total_score:.4f}  (CN={CN_score:.4f}, fb={fb_dist:.4f}, miss_fb={missing_fb_score:.4f}{cn_div_str})  {label}")
+            print(f"  BFB {idx+1}: score={total_score:.4f}  (CN={cn_score:.4f}, fb={fb_dist:.4f}, miss_fb={missing_fb_score:.4f}{cn_div_str})  {label}")
         scores.append(total_score)
 
     return scores
