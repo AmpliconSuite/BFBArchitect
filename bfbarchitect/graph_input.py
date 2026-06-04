@@ -1,10 +1,12 @@
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 
 try:
     from bfbarchitect.datatypes import SV, CHR_CENTRO
 except ImportError:
     from datatypes import SV, CHR_CENTRO
+
+MAX_FOLDBACKS_FOR_GRAPH_RECON = 50
 
 
 # ── helpers (ported from ampclasslib/bfb_regions.py) ─────────────────────────
@@ -45,6 +47,11 @@ def _find_gap_index(point, segs):
     return None
 
 
+def _foldback_cn_count(sv_cn):
+    """Count every observed graph foldback at least once in lf/rf vectors."""
+    return max(1, round(sv_cn))
+
+
 # ── graph file parser ─────────────────────────────────────────────────────────
 
 def parse_graph_file(graph_file):
@@ -83,6 +90,283 @@ def parse_graph_file(graph_file):
     for segs in chrom_segs.values():
         segs.sort(key=lambda x: x[0])
     return svs, chrom_segs
+
+
+# ── TST-jump foldback detection ──────────────────────────────────────────────
+
+def _build_graph_lookups(svs, chrom_segs):
+    """Build (chrom, pos, dir) → segment and → SV-entry lookup tables."""
+    bp_to_seg = {}
+    for chrom, segs in chrom_segs.items():
+        for start, end, *_ in segs:
+            bp_to_seg[(chrom, start, '-')] = (start, end)
+            bp_to_seg[(chrom, end,   '+')] = (start, end)
+
+    sv_index = defaultdict(list)
+    for entry in svs:
+        sv = entry[0]
+        sv_index[(sv.chrom1, sv.bp1, sv.strand1)].append(entry)
+        sv_index[(sv.chrom2, sv.bp2, sv.strand2)].append(entry)
+
+    return bp_to_seg, sv_index
+
+
+def _shard_path_reachable(start, target, bp_to_seg, sv_index, shard_max_bp, max_hops, exclude_svs=None):
+    """
+    BFS from start to target through shard-sized segments only.
+
+    Movements allowed:
+      - Traverse a shard (<= shard_max_bp) from one end to the other (costs 1 hop).
+      - Concordant edge: move between adjacent segment endpoints (pos+ <-> (pos+1)-),
+        free if it reaches target or leads into another shard.
+      - Discordant SV edge: free if it reaches target or leads into a shard endpoint.
+
+    Returns list of (chrom, start, end) shard tuples traversed, or None.
+    """
+    queue = deque([(start, [], frozenset())])
+    seen = set()
+
+    while queue:
+        curr, path, visited = queue.popleft()
+
+        if curr == target:
+            return path
+
+        key = (curr, visited)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if len(path) >= max_hops:
+            continue
+
+        chrom, pos, d = curr
+
+        # Traverse the shard whose endpoint is curr
+        seg = bp_to_seg.get(curr)
+        if seg is not None:
+            s, e = seg
+            seg_id = (chrom, s, e)
+            if e - s <= shard_max_bp and seg_id not in visited:
+                other = (chrom, e, '+') if d == '-' else (chrom, s, '-')
+                queue.append((other, path + [seg_id], visited | {seg_id}))
+
+        # Concordant edge (AA convention: pos+ connects to (pos+1)-)
+        adj = (chrom, pos + 1, '-') if d == '+' else (chrom, pos - 1, '+')
+        if adj == target:
+            queue.append((adj, path, visited))
+        else:
+            adj_seg = bp_to_seg.get(adj)
+            if adj_seg is not None and adj_seg[1] - adj_seg[0] <= shard_max_bp:
+                queue.append((adj, path, visited))
+
+        # Discordant SV edges: only follow into shard-sized segments.
+        # Do NOT shortcut directly to target — that would accept any far-jumping
+        # SV that happens to land on the target, producing false positives.
+        for entry in sv_index.get(curr, []):
+            sv = entry[0]
+            if exclude_svs and sv in exclude_svs:
+                continue
+            other = (sv.chrom2, sv.bp2, sv.strand2) \
+                    if (sv.chrom1, sv.bp1, sv.strand1) == curr \
+                    else (sv.chrom1, sv.bp1, sv.strand1)
+            other_seg = bp_to_seg.get(other)
+            if other_seg is not None and other_seg[1] - other_seg[0] <= shard_max_bp:
+                queue.append((other, path, visited))
+
+    return None
+
+
+def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
+                       fb_dist=50000, far_min=500000, verbose=False):
+    """
+    Detect TST-jump (template-switching) foldbacks and inject synthetic FBI SVs.
+
+    A TST foldback is formed when two far-jumping SVs (inter-chromosomal or
+    >far_min bp) have local breakends on the same chromosome within fb_dist of
+    each other with opposite orientations (+/-), and their far breakends are
+    connected through a chain of shard-sized segments (<= shard_max_bp).
+
+    For each confirmed pair a synthetic '++' FBI SV is created so the normal
+    lf/rf vector build in subsect_graph_for_region picks it up.  The synthetic
+    SV has .TST = True.
+
+    Two local-breakend topologies are handled:
+      Topology A  lo='+', hi='-'  breakpoints are outer boundaries of the shard
+                  → FBI: (pos_lo, +, pos_hi-1, +)
+      Topology B  lo='-', hi='+'  breakpoints are the shard's own endpoints
+                  → FBI: (pos_lo-1, +, pos_hi, +)
+
+    Returns the input svs list extended with any (synthetic_SV, cn, 0) tuples.
+    """
+    bp_to_seg, sv_index = _build_graph_lookups(svs, chrom_segs)
+
+    # Pre-compute cut-point positions of direct (non-TST) foldbacks so we can
+    # skip far-side injections that would duplicate an existing foldback's cut.
+    # ++ foldbacks cut at bp2; -- foldbacks cut at bp1.
+    existing_fb_cuts = set()
+    # Also build a per-chromosome list of real foldback (bp1, bp2) spans for the
+    # TST duplicate check below.
+    real_fb_spans = defaultdict(list)
+    for sv, _cn, _rc in svs:
+        if sv.is_foldback():
+            if sv.strand1 == '+':
+                existing_fb_cuts.add((sv.chrom1, sv.bp2))
+            else:
+                existing_fb_cuts.add((sv.chrom1, sv.bp1))
+            real_fb_spans[sv.chrom1].append((sv.bp1, sv.bp2))
+
+    # Collect far-jumping breakends indexed by local chromosome.
+    # An SV contributes two entries (once per end) so both ends are candidates
+    # for being the "local" side.
+    far_by_chrom = defaultdict(list)
+    for entry in svs:
+        sv, cn, rc = entry
+        for local, far in [
+            ((sv.chrom1, sv.bp1, sv.strand1), (sv.chrom2, sv.bp2, sv.strand2)),
+            ((sv.chrom2, sv.bp2, sv.strand2), (sv.chrom1, sv.bp1, sv.strand1)),
+        ]:
+            lc, lp, ld = local
+            fc, fp, _  = far
+            if fc != lc or abs(fp - lp) >= far_min:
+                far_by_chrom[lc].append((lp, ld, far, sv, cn, rc))
+
+    seen_pairs = set()
+    synthetic = []
+
+    for chrom, breakends in far_by_chrom.items():
+        for i, (pos_i, dir_i, far_i, sv_i, cn_i, rc_i) in enumerate(breakends):
+            for pos_j, dir_j, far_j, sv_j, cn_j, rc_j in breakends[i + 1:]:
+                if sv_i is sv_j:                       # same SV, skip
+                    continue
+                if abs(pos_i - pos_j) > fb_dist:       # too far apart locally
+                    continue
+                if dir_i == dir_j:                     # need opposite orientations
+                    continue
+                if far_i == far_j:                     # degenerate: same far end
+                    continue
+
+                pair_key = (min(id(sv_i), id(sv_j)), max(id(sv_i), id(sv_j)))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+
+                fc_i, fp_i, fd_i = far_i
+                fc_j, fp_j, fd_j = far_j
+
+                # Skip: the far ends are already the direct endpoints of a real
+                # foldback SV.  The BFS would "find" a path through that foldback's
+                # own hairpin segment — the fold is already represented and a
+                # synthetic FBI would be a duplicate.
+                if fc_i == fc_j:
+                    p_lo, p_hi = min(fp_i, fp_j), max(fp_i, fp_j)
+                    if any(abs(b1 - p_lo) <= 5 and abs(b2 - p_hi) <= 5
+                           for b1, b2 in real_fb_spans.get(fc_i, [])):
+                        if verbose:
+                            cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
+                            print(f"[TST] Candidate {chrom}:{pos_i}({dir_i}) <-> "
+                                  f"{chrom}:{pos_j}({dir_j}) "
+                                  f"[{abs(pos_i - pos_j)} bp apart]  "
+                                  f"skipped (far ends are direct foldback endpoints)")
+                            print(f"       SV1: {sv_i}  CN={cn_i:.2f}  rc={rc_i}")
+                            print(f"       SV2: {sv_j}  CN={cn_j:.2f}  rc={rc_j}  "
+                                  f"CN_ratio={cn_ratio:.2f}")
+                            print(f"       Far ends: {fc_i}:{fp_i}({fd_i})  "
+                                  f"and  {fc_j}:{fp_j}({fd_j})")
+                        continue
+
+                path = _shard_path_reachable(far_i, far_j, bp_to_seg, sv_index,
+                                             shard_max_bp, max_hops,
+                                             exclude_svs={sv_i, sv_j})
+
+                if verbose:
+                    status = "confirmed" if path is not None else "rejected (no shard path)"
+                    print(f"[TST] Candidate {chrom}:{pos_i}({dir_i}) <-> {chrom}:{pos_j}({dir_j}) "
+                          f"[{abs(pos_i - pos_j)} bp apart]  {status}")
+                    cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
+                    print(f"       SV1: {sv_i}  CN={cn_i:.2f}  rc={rc_i}")
+                    print(f"       SV2: {sv_j}  CN={cn_j:.2f}  rc={rc_j}  CN_ratio={cn_ratio:.2f}")
+                    print(f"       Far ends: {fc_i}:{fp_i}({fd_i})  and  {fc_j}:{fp_j}({fd_j})")
+                    if path is not None:
+                        if path:
+                            total_shard_bp = sum(e - s for _, s, e in path)
+                            hops = ' -> '.join(f"{c}:{s}-{e} [{e-s} bp]" for c, s, e in path)
+                            print(f"       Shard path ({len(path)} hop{'s' if len(path) != 1 else ''}, "
+                                  f"{total_shard_bp} bp total): {hops}")
+                        else:
+                            print(f"       Shard path: concordant connection (0 shard hops)")
+
+                if path is None:
+                    continue
+
+                pos_lo, dir_lo = (pos_i, dir_i) if pos_i <= pos_j else (pos_j, dir_j)
+                pos_hi          = pos_j            if pos_i <= pos_j else pos_i
+
+                # Topology A (lo='+', hi='-'): shard fills the gap between them
+                # Topology B (lo='-', hi='+'): breakpoints are the shard's endpoints
+                if dir_lo == '+':
+                    fbi_bp1, fbi_bp2 = pos_lo, pos_hi - 1
+                else:
+                    fbi_bp1, fbi_bp2 = pos_lo - 1, pos_hi
+
+                if fbi_bp2 < fbi_bp1:
+                    if verbose:
+                        print(f"       WARNING: degenerate coordinates ({fbi_bp1}, {fbi_bp2}), skipping")
+                    continue
+
+                cn_tst = min(cn_i, cn_j)
+                synth = SV(chrom, fbi_bp1, '+', chrom, fbi_bp2, '+')
+                synth.TST = True
+
+                if verbose:
+                    print(f"       -> Injecting synthetic FBI: {chrom}:{fbi_bp1}(+) <-> "
+                          f"{chrom}:{fbi_bp2}(+)  CN={cn_tst:.2f}")
+
+                synthetic.append((synth, cn_tst, 0))
+
+                # If the far ends share a chromosome and are within foldback
+                # distance, the fold also lives there — inject an FBI on that
+                # side so subsect_graph_for_region picks it up for that chrom.
+                if fc_i == fc_j and abs(fp_i - fp_j) <= fb_dist:
+                    synth_far = None
+                    if fd_i == fd_j:
+                        synth_far = SV(fc_i, min(fp_i, fp_j), fd_i,
+                                       fc_i, max(fp_i, fp_j), fd_i)
+                    else:
+                        fp_lo, fp_hi = (fp_i, fp_j) if fp_i <= fp_j else (fp_j, fp_i)
+                        fd_lo = fd_i if fp_i <= fp_j else fd_j
+                        if fd_lo == '+':
+                            far_bp1, far_bp2 = fp_lo, fp_hi - 1
+                        else:
+                            far_bp1, far_bp2 = fp_lo - 1, fp_hi
+                        if far_bp2 >= far_bp1:
+                            synth_far = SV(fc_i, far_bp1, '+', fc_i, far_bp2, '+')
+                    if synth_far is not None:
+                        # Skip if a direct foldback already covers the same cut point.
+                        far_cut = (fc_i, synth_far.bp2 if synth_far.strand1 == '+'
+                                   else synth_far.bp1)
+                        if far_cut in existing_fb_cuts:
+                            if verbose:
+                                print(f"       -> Far-side FBI skipped: direct foldback "
+                                      f"already at {fc_i} cut {far_cut[1]}")
+                        else:
+                            synth_far.TST = True
+                            synthetic.append((synth_far, cn_tst, 0))
+                            if verbose:
+                                d = synth_far.strand1
+                                print(f"       -> Also injecting far-side FBI: "
+                                      f"{fc_i}:{synth_far.bp1}({d}) <-> "
+                                      f"{fc_i}:{synth_far.bp2}({d})  CN={cn_tst:.2f}")
+
+    # Deduplicate: multiple SV pairs may produce the same synthetic FBI at the
+    # same coordinates.  Keep the entry with the highest CN.
+    deduped = {}
+    for entry in synthetic:
+        sv, cn, rc = entry
+        key = str(sv)
+        if key not in deduped or cn > deduped[key][1]:
+            deduped[key] = entry
+    return svs + list(deduped.values())
 
 
 # ── BFB candidate region detection ───────────────────────────────────────────
@@ -171,7 +455,7 @@ def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_
                     continue
                 region_start, region_end = s_a, e_c
                 for p1, p2, _ in fb_list:
-                    if p1 >= region_start and p2 <= region_end:
+                    if p1 >= region_start - merge_gap and p2 <= region_end + merge_gap:
                         candidates.append((chrom, region_start, region_end))
                         break
 
@@ -278,6 +562,17 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
         sv_info       dict[SV, (cn_float, read_count)]
     """
     svs, chrom_segs = parse_graph_file(graph_file)
+
+    n_foldbacks = sum(1 for sv, _, _ in svs if sv.is_foldback(max_distance=fb_dist_cut))
+    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
+        return [None] * len(regions)
+
+    raw_svs = svs
+    svs = find_tst_foldbacks(raw_svs, chrom_segs, fb_dist=fb_dist_cut, verbose=verbose)
+
+    n_foldbacks = sum(1 for sv, _, _ in svs if sv.is_foldback(max_distance=fb_dist_cut))
+    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
+        svs = raw_svs
 
     # Pre-group foldback SVs by chromosome to avoid a full scan per region.
     sv_cn_map = {sv: cn for sv, cn, _rc in svs}
@@ -555,12 +850,13 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
 
         for sv in foldback_svs:
             sv_cn = sv_cn_map.get(sv, 0.0)
+            fb_count = _foldback_cn_count(sv_cn)
             if sv.strand1 == '-':    # left (--) foldback: segment starts at bp1
                 if sv.bp1 in l_bp_idx:
-                    lf[l_bp_idx[sv.bp1]] += round(sv_cn)
+                    lf[l_bp_idx[sv.bp1]] += fb_count
             else:                     # right (++) foldback: segment ends at bp2
                 if sv.bp2 in r_bp_idx:
-                    rf[r_bp_idx[sv.bp2]] += round(sv_cn)
+                    rf[r_bp_idx[sv.bp2]] += fb_count
 
         if verbose:
             print(f"  Step 6 – CN/LF/RF vectors ({len(new_segments)} segments):")
@@ -604,16 +900,30 @@ def whole_graph_as_region(graph_file, centromere_dict=None):
     """
     svs_raw, chrom_segs = parse_graph_file(graph_file)
 
+    n_foldbacks = sum(1 for sv, _, _ in svs_raw if sv.is_foldback())
+    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
+        return [], [], [], [], [], {}, ''
+
+    raw_svs = svs_raw
+    svs_raw = find_tst_foldbacks(raw_svs, chrom_segs)
+
+    n_foldbacks = sum(1 for sv, _, _ in svs_raw if sv.is_foldback())
+    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
+        svs_raw = raw_svs
+
     svs_list = [sv for sv, _cn, _rc in svs_raw]
     sv_info  = {sv: (cn, rc) for sv, cn, rc in svs_raw}
 
-    # Derive the amplified region from the sequence edges
+    # Derive the amplified region from the sequence edges.
+    # Primary chromosome = highest total CN-weighted length (most amplified content).
     chrom_ranges = {}
+    chrom_cn_length = {}
     for chrom, segs in chrom_segs.items():
         starts = [s for s, *_ in segs]
         ends   = [e for _, e, *_ in segs]
         chrom_ranges[chrom] = (min(starts), max(ends))
-    primary_chrom = next(iter(chrom_ranges))
+        chrom_cn_length[chrom] = sum((e - s) * cn for s, e, cn, *_ in segs)
+    primary_chrom = max(chrom_cn_length, key=chrom_cn_length.__getitem__)
     region_start, region_end = chrom_ranges[primary_chrom]
     region = (primary_chrom, region_start, region_end)
 
@@ -671,9 +981,236 @@ def whole_graph_as_region(graph_file, centromere_dict=None):
     for sv in svs_list:
         flag1, flag2 = sv.is_in_region(region)
         if sv.is_foldback() and flag1 and flag2:
+            fb_count = _foldback_cn_count(sv_info[sv][0])
             if sv.strand1 == '-' and sv.bp1 in l_bp:
-                lf[l_bp.index(sv.bp1)] += round(sv_info[sv][0])
+                lf[l_bp.index(sv.bp1)] += fb_count
             elif sv.strand1 == '+' and sv.bp2 in r_bp:
-                rf[r_bp.index(sv.bp2)] += round(sv_info[sv][0])
+                rf[r_bp.index(sv.bp2)] += fb_count
 
     return new_segments, cn, lf, rf, svs_list, sv_info, primary_chrom
+
+
+# ── TST chain report ─────────────────────────────────────────────────────────
+
+def write_tst_report(graph_file, output_file, bfb_regions=None,
+                     shard_max_bp=5000, max_hops=5, fb_dist=50000,
+                     far_min=500000):
+    """
+    Write a human-readable TST-chain report for graph_file to output_file.
+
+    Each confirmed TST event is described as a chain:
+      local breakpoints → SV anchors → shard path → far ends
+    with CNs, read counts, and whether each far end lies in a BFB candidate
+    region.
+
+    Parameters
+    ----------
+    graph_file  : str   Path to AA _graph.txt file.
+    output_file : str   Path to write the report (plain text).
+    bfb_regions : list of (chrom, start, end), optional
+        Pre-computed BFB candidate regions.  If None, auto-detected via
+        find_bfb_candidate_regions().
+    """
+    svs, chrom_segs = parse_graph_file(graph_file)
+
+    if bfb_regions is None:
+        bfb_regions = find_bfb_candidate_regions(graph_file)
+
+    def in_bfb(chrom, pos):
+        for rc, rs, re in bfb_regions:
+            if rc == chrom and rs <= pos <= re:
+                return True
+        return False
+
+    def seg_for(chrom, pos, direction):
+        """Return the segment tuple containing this breakend, or None."""
+        for s, e, cn, cov, rc in chrom_segs.get(chrom, []):
+            ep = s if direction == '-' else e
+            if ep == pos:
+                return (s, e, cn)
+        return None
+
+    bp_to_seg, sv_index = _build_graph_lookups(svs, chrom_segs)
+    existing_fb_cuts = set()
+    real_fb_spans = defaultdict(list)
+    for sv, _cn, _rc in svs:
+        if sv.is_foldback():
+            existing_fb_cuts.add((sv.chrom1, sv.bp2 if sv.strand1 == '+' else sv.bp1))
+            real_fb_spans[sv.chrom1].append((sv.bp1, sv.bp2))
+
+    far_by_chrom = defaultdict(list)
+    for entry in svs:
+        sv, cn, rc = entry
+        for local, far in [
+            ((sv.chrom1, sv.bp1, sv.strand1), (sv.chrom2, sv.bp2, sv.strand2)),
+            ((sv.chrom2, sv.bp2, sv.strand2), (sv.chrom1, sv.bp1, sv.strand1)),
+        ]:
+            lc, lp, ld = local
+            fc, fp, _ = far
+            if fc != lc or abs(fp - lp) >= far_min:
+                far_by_chrom[lc].append((lp, ld, far, sv, cn, rc))
+
+    events = []
+    seen_pairs = set()
+
+    for chrom, breakends in far_by_chrom.items():
+        for i, (pos_i, dir_i, far_i, sv_i, cn_i, rc_i) in enumerate(breakends):
+            for pos_j, dir_j, far_j, sv_j, cn_j, rc_j in breakends[i + 1:]:
+                if sv_i is sv_j:                    continue
+                if abs(pos_i - pos_j) > fb_dist:    continue
+                if dir_i == dir_j:                  continue
+                if far_i == far_j:                  continue
+                pair_key = (min(id(sv_i), id(sv_j)), max(id(sv_i), id(sv_j)))
+                if pair_key in seen_pairs:          continue
+                seen_pairs.add(pair_key)
+
+                fc_i, fp_i, fd_i = far_i
+                fc_j, fp_j, fd_j = far_j
+
+                # Skip if the far ends are the direct endpoints of a real foldback.
+                if fc_i == fc_j:
+                    p_lo, p_hi = min(fp_i, fp_j), max(fp_i, fp_j)
+                    if any(abs(b1 - p_lo) <= 5 and abs(b2 - p_hi) <= 5
+                           for b1, b2 in real_fb_spans.get(fc_i, [])):
+                        continue
+
+                path = _shard_path_reachable(far_i, far_j, bp_to_seg, sv_index,
+                                             shard_max_bp, max_hops,
+                                             exclude_svs={sv_i, sv_j})
+                if path is None:
+                    continue
+
+                # Determine synthetic FBI coordinates (same as find_tst_foldbacks)
+                pos_lo, dir_lo = (pos_i, dir_i) if pos_i <= pos_j else (pos_j, dir_j)
+                pos_hi          = pos_j           if pos_i <= pos_j else pos_i
+                if dir_lo == '+':
+                    fbi_bp1, fbi_bp2 = pos_lo, pos_hi - 1
+                else:
+                    fbi_bp1, fbi_bp2 = pos_lo - 1, pos_hi
+                if fbi_bp2 < fbi_bp1:
+                    continue
+
+                cn_tst = min(cn_i, cn_j)
+                cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
+
+                # Far-side FBI (if applicable)
+                far_fbi = None
+                far_fbi_reason = None
+                if fc_i != fc_j or abs(fp_i - fp_j) > fb_dist:
+                    far_fbi_reason = "far ends on different chroms or too far apart"
+                else:
+                    if fd_i == fd_j:
+                        far_fbi = SV(fc_i, min(fp_i, fp_j), fd_i,
+                                     fc_i, max(fp_i, fp_j), fd_i)
+                    else:
+                        fp_lo2 = min(fp_i, fp_j); fp_hi2 = max(fp_i, fp_j)
+                        fd_lo2 = fd_i if fp_i <= fp_j else fd_j
+                        fbp1 = fp_lo2 if fd_lo2 == '+' else fp_lo2 - 1
+                        fbp2 = fp_hi2 - 1 if fd_lo2 == '+' else fp_hi2
+                        if fbp2 >= fbp1:
+                            far_fbi = SV(fc_i, fbp1, '+', fc_i, fbp2, '+')
+                    if far_fbi is not None:
+                        far_cut = (fc_i, far_fbi.bp2 if far_fbi.strand1 == '+'
+                                   else far_fbi.bp1)
+                        if far_cut in existing_fb_cuts:
+                            far_fbi_reason = (f"direct foldback already covers "
+                                              f"{fc_i} cut {far_cut[1]}")
+                            far_fbi = None
+
+                events.append({
+                    'chrom': chrom,
+                    'pos_lo': min(pos_i, pos_j), 'dir_lo': dir_lo,
+                    'pos_hi': max(pos_i, pos_j),
+                    'local_gap': abs(pos_i - pos_j),
+                    'sv_lo': sv_i if pos_i <= pos_j else sv_j,
+                    'sv_hi': sv_j if pos_i <= pos_j else sv_i,
+                    'cn_lo': cn_i if pos_i <= pos_j else cn_j,
+                    'rc_lo': rc_i if pos_i <= pos_j else rc_j,
+                    'cn_hi': cn_j if pos_i <= pos_j else cn_i,
+                    'rc_hi': rc_j if pos_i <= pos_j else rc_i,
+                    'cn_ratio': cn_ratio,
+                    'cn_tst': cn_tst,
+                    'far_lo': far_i if pos_i <= pos_j else far_j,
+                    'far_hi': far_j if pos_i <= pos_j else far_i,
+                    'path': path,
+                    'fbi_bp1': fbi_bp1, 'fbi_bp2': fbi_bp2,
+                    'far_fbi': far_fbi,
+                    'far_fbi_reason': far_fbi_reason,
+                })
+
+    import os
+    with open(output_file, 'w') as out:
+        out.write(f"TST-FOLDBACK REPORT\n")
+        out.write(f"Graph:   {os.path.basename(graph_file)}\n")
+        if bfb_regions:
+            out.write(f"BFB regions detected: "
+                      + ", ".join(f"{c}:{s}-{e}" for c, s, e in bfb_regions) + "\n")
+        else:
+            out.write("BFB regions detected: none\n")
+        out.write(f"TST events found: {len(events)}\n")
+
+        for idx, ev in enumerate(events, 1):
+            out.write(f"\n{'='*60}\n")
+            out.write(f"Event {idx}/{len(events)}  [local chromosome: {ev['chrom']}]\n")
+            out.write(f"\n  Local breakpoints: {ev['chrom']}:{ev['pos_lo']}({ev['dir_lo']}) "
+                      f"<-> {ev['chrom']}:{ev['pos_hi']}(+)   "
+                      f"[{ev['local_gap']} bp apart]\n")
+
+            # SV at low-position local end
+            sv_lo = ev['sv_lo']
+            far_lo_c, far_lo_p, far_lo_d = ev['far_lo']
+            far_lo_seg = seg_for(far_lo_c, far_lo_p, far_lo_d)
+            bfb_lo = in_bfb(far_lo_c, far_lo_p)
+            out.write(f"\n  SV (lo-end)  CN={ev['cn_lo']:.2f}  rc={ev['rc_lo']}\n")
+            out.write(f"    {sv_lo}\n")
+            out.write(f"    Far end: {far_lo_c}:{far_lo_p}({far_lo_d})")
+            if far_lo_seg:
+                s, e, cn = far_lo_seg
+                out.write(f"  →  seg {far_lo_c}:{s}-{e}  [{e-s} bp, CN={cn:.2f}]")
+            out.write(f"  {'◀ in BFB region' if bfb_lo else ''}\n")
+
+            # SV at high-position local end
+            sv_hi = ev['sv_hi']
+            far_hi_c, far_hi_p, far_hi_d = ev['far_hi']
+            far_hi_seg = seg_for(far_hi_c, far_hi_p, far_hi_d)
+            bfb_hi = in_bfb(far_hi_c, far_hi_p)
+            out.write(f"\n  SV (hi-end)  CN={ev['cn_hi']:.2f}  rc={ev['rc_hi']}\n")
+            out.write(f"    {sv_hi}\n")
+            out.write(f"    Far end: {far_hi_c}:{far_hi_p}({far_hi_d})")
+            if far_hi_seg:
+                s, e, cn = far_hi_seg
+                out.write(f"  →  seg {far_hi_c}:{s}-{e}  [{e-s} bp, CN={cn:.2f}]")
+            out.write(f"  {'◀ in BFB region' if bfb_hi else ''}\n")
+
+            out.write(f"\n  CN_ratio: {ev['cn_ratio']:.2f}   TST CN: {ev['cn_tst']:.2f}\n")
+
+            # Shard path
+            path = ev['path']
+            if path:
+                total = sum(e - s for _, s, e in path)
+                out.write(f"\n  Shard path ({len(path)} hop{'s' if len(path)!=1 else ''}, "
+                          f"{total} bp total):\n")
+                for pc, ps, pe in path:
+                    # Find CN of this shard from chrom_segs
+                    shard_cn = next((cn for s, e, cn, *_ in chrom_segs.get(pc, [])
+                                     if s == ps and e == pe), None)
+                    cn_str = f"  CN={shard_cn:.2f}" if shard_cn is not None else ""
+                    bfb_str = "  ◀ in BFB region" if in_bfb(pc, (ps + pe) // 2) else ""
+                    out.write(f"    {pc}:{ps}-{pe}  [{pe-ps} bp]{cn_str}{bfb_str}\n")
+            else:
+                out.write(f"\n  Shard path: concordant (0 shard hops)\n")
+
+            # Injected FBIs
+            out.write(f"\n  Injected FBI (local):  "
+                      f"{ev['chrom']}:{ev['fbi_bp1']}(+) <-> "
+                      f"{ev['chrom']}:{ev['fbi_bp2']}(+)  CN={ev['cn_tst']:.2f}\n")
+            if ev['far_fbi'] is not None:
+                ff = ev['far_fbi']
+                out.write(f"  Injected FBI (far):    "
+                          f"{ff.chrom1}:{ff.bp1}({ff.strand1}) <-> "
+                          f"{ff.chrom2}:{ff.bp2}({ff.strand2})  CN={ev['cn_tst']:.2f}\n")
+            else:
+                out.write(f"  Injected FBI (far):    none"
+                          f"  [{ev['far_fbi_reason']}]\n")
+
+        out.write(f"\n{'='*60}\n")
