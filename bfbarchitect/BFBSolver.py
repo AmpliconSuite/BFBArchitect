@@ -381,10 +381,12 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
                     if int(model.cbGet(GRB.Callback.MIPNODE_STATUS)) == 2:  # LP solved to optimality
                         lp_bound = model.cbGet(GRB.Callback.MIPNODE_OBJBND)
                         elapsed = model.cbGet(GRB.Callback.RUNTIME)
-                        print(f"  [root LP]   t={elapsed:.1f}s  LP_bound={lp_bound:.4f}", flush=True)
+                        if verbose or score_fn is not None:
+                            print(f"  [root LP]   t={elapsed:.1f}s  LP_bound={lp_bound:.4f}", flush=True)
                         root_lp_logged[0] = True
                         if min_lp_bound is not None and lp_bound > min_lp_bound:
-                            print(f"  [early termination: LP_bound={lp_bound:.4f} > threshold={min_lp_bound}]", flush=True)
+                            if verbose or score_fn is not None:
+                                print(f"  [early termination: LP_bound={lp_bound:.4f} > threshold={min_lp_bound}]", flush=True)
                             model.terminate()
                             _terminated_early[0] = True
             elif where == GRB.Callback.MIPSOL:
@@ -402,7 +404,7 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
                         print(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  score={score:.4f}", flush=True)
                     except Exception as e:
                         print(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  (scoring error: {e})", flush=True)
-                else:
+                elif verbose:
                     print(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}", flush=True)
         except Exception as e:
             print(f"  [callback error] where={where}: {e}", flush=True)

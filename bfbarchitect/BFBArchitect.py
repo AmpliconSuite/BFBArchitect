@@ -378,7 +378,7 @@ def trim_background_segments(new_segments, cn, lf, rf):
 
 def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multiple=False,
                     verbose=False, log_file=None, silent=False, threads=8, track_solve=False,
-                    min_lp_bound=None):
+                    min_lp_bound=25):
     """
     Reconstruct BFB sequences from pre-segmented copy-number and foldback data.
     """
@@ -443,7 +443,7 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         if silent:
             logger.setLevel(old_level)
 
-def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=False, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=None):
+def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=False, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25):
     if solver is None:
         solver = detect_solver()
     if centromere_dict is None:
@@ -580,7 +580,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
 def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                                multiple=False, whole_graph=False, region=None,
                                verbose=False, log_file=None, silent=False, threads=8,
-                               track_solve=False, min_lp_bound=None):
+                               track_solve=False, min_lp_bound=25):
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -597,7 +597,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
     results = []
     if whole_graph:
         new_segments, cn, lf, rf, svs_list, sv_info, primary_chrom = whole_graph_as_region(
-            graph_fn, centromere_dict=centromere_dict)
+            graph_fn, centromere_dict=centromere_dict, verbose=verbose if not silent else False)
         if new_segments:
             region = (primary_chrom, new_segments[0][1], new_segments[-1][2])
             if not silent:
@@ -657,7 +657,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
 
 def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
                        whole_graph=False, region=None, gene=None,
-                       centromere_dict=None, verbose=False, threads=8, min_lp_bound=None):
+                       centromere_dict=None, verbose=False, threads=8, min_lp_bound=25):
     """
     CLI entry point to reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -728,10 +728,12 @@ def main():
     parser.add_argument("-t", "--threads", type=int, default=8, help="Number of threads for the ILP solver (default: 8).")
     parser.add_argument("--centromere", help="Path to a BED file of centromere regions.", default=None)
     parser.add_argument("--verbose", help="Print all log messages to stdout in addition to the log file.", action='store_true')
-    parser.add_argument("--min-lp-bound", type=float, default=None, dest='min_lp_bound',
+    parser.add_argument("--min-lp-bound", type=float, default=25, dest='min_lp_bound',
                         help="Stop early if the root LP bound exceeds this value (Gurobi only). "
-                             "Uncapped by default. A value such as 25 can prevent wasting time on clear non-BFBs.")
+                             "Default: 25. Use 0 or a negative value to disable this cutoff.")
     args = parser.parse_args()
+    if args.min_lp_bound is not None and args.min_lp_bound <= 0:
+        args.min_lp_bound = None
     centromere_dict = build_centromere_dict(args.centromere)
     if args.graph:
         if args.whole_graph and args.region:

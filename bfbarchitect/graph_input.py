@@ -7,6 +7,9 @@ except ImportError:
     from datatypes import SV, CHR_CENTRO
 
 MAX_FOLDBACKS_FOR_GRAPH_RECON = 50
+LOCAL_FOLDBACK_RESCUE_CN_RATIO = 1.25
+MIN_RAW_FOLDBACK_FLANK_CN_CHANGE = 0.2
+MIN_TST_FOLDBACK_FLANK_CN_CHANGE = 1.0
 
 
 # ── helpers (ported from ampclasslib/bfb_regions.py) ─────────────────────────
@@ -50,6 +53,293 @@ def _find_gap_index(point, segs):
 def _foldback_cn_count(sv_cn):
     """Count every observed graph foldback at least once in lf/rf vectors."""
     return max(1, round(sv_cn))
+
+
+def _foldback_flank_cn_change(sv, chrom_segs):
+    """
+    CN difference between the left and right outside flanks of a foldback.
+
+    Returns None if either flank cannot be found.  Callers should treat unknown
+    flanks conservatively and keep the foldback.
+    """
+    if sv.chrom1 != sv.chrom2 or sv.strand1 != sv.strand2:
+        return None
+
+    segs = chrom_segs.get(sv.chrom1, [])
+    left_cn = None
+    right_cn = None
+    if sv.strand1 == '+':
+        left_end = sv.bp1
+        right_start = sv.bp2 + 1
+    else:
+        left_end = sv.bp1 - 1
+        right_start = sv.bp2
+
+    for start, end, cn, _cov, _rc in segs:
+        if end == left_end:
+            left_cn = cn
+        if start == right_start:
+            right_cn = cn
+
+    if left_cn is None or right_cn is None:
+        return None
+    return abs(left_cn - right_cn)
+
+
+def _foldback_passes_flank_cn_filter(sv, chrom_segs, min_change):
+    change = _foldback_flank_cn_change(sv, chrom_segs)
+    return change is None or change >= min_change
+
+
+def _foldback_passes_recon_cn_filter(sv, chrom_segs):
+    min_change = (MIN_TST_FOLDBACK_FLANK_CN_CHANGE
+                  if getattr(sv, 'TST', False)
+                  else MIN_RAW_FOLDBACK_FLANK_CN_CHANGE)
+    return _foldback_passes_flank_cn_filter(sv, chrom_segs, min_change)
+
+
+def _segment_index_by_endpoint(chrom_segs):
+    endpoint_to_seg = {}
+    for chrom, segs in chrom_segs.items():
+        for idx, (start, end, cn, cov, rc) in enumerate(segs):
+            endpoint_to_seg[(chrom, start, '-')] = (idx, (start, end, cn, cov, rc))
+            endpoint_to_seg[(chrom, end, '+')] = (idx, (start, end, cn, cov, rc))
+    return endpoint_to_seg
+
+
+def _sv_other_endpoint(sv, endpoint):
+    chrom, pos, strand = endpoint
+    if (sv.chrom1, sv.bp1, sv.strand1) == (chrom, pos, strand):
+        return (sv.chrom2, sv.bp2, sv.strand2)
+    if (sv.chrom2, sv.bp2, sv.strand2) == (chrom, pos, strand):
+        return (sv.chrom1, sv.bp1, sv.strand1)
+    return None
+
+
+def _foldback_vector_slot(sv, l_bp_idx, r_bp_idx):
+    if sv.strand1 == '-' and sv.bp1 in l_bp_idx:
+        return 'lf', l_bp_idx[sv.bp1]
+    if sv.strand1 == '+' and sv.bp2 in r_bp_idx:
+        return 'rf', r_bp_idx[sv.bp2]
+    return None
+
+
+def _find_local_foldback_rescue_anchors(svs, sv_cn_map, chrom_segs,
+                                        primary_chrom, region=None,
+                                        verbose=False,
+                                        label='local_foldback_rescue'):
+    """
+    Find displaced foldbacks before simplification hides their target boundary.
+
+    Pattern:
+      candidate boundary with CN drop -> non-foldback SV -> one landed sequence
+      block -> foldback at the far end of that block, with a CN drop around it.
+    """
+    endpoint_to_seg = _segment_index_by_endpoint(chrom_segs)
+
+    sv_by_endpoint = defaultdict(list)
+    foldbacks_by_endpoint = defaultdict(list)
+    for sv, cn, rc in svs:
+        endpoints = [
+            (sv.chrom1, sv.bp1, sv.strand1),
+            (sv.chrom2, sv.bp2, sv.strand2),
+        ]
+        for endpoint in endpoints:
+            sv_by_endpoint[endpoint].append((sv, cn, rc))
+            if (sv.is_foldback()
+                    and _foldback_passes_recon_cn_filter(sv, chrom_segs)):
+                foldbacks_by_endpoint[endpoint].append((sv, cn, rc))
+
+    raw_segs = chrom_segs.get(primary_chrom, [])
+    anchors = []
+    moved_foldbacks = set()
+
+    for raw_idx, (start, end, seg_cn, _cov, _rc) in enumerate(raw_segs):
+        boundary_specs = []
+        if raw_idx + 1 < len(raw_segs):
+            next_cn = raw_segs[raw_idx + 1][2]
+            if seg_cn >= LOCAL_FOLDBACK_RESCUE_CN_RATIO * next_cn:
+                boundary_specs.append(('right', (primary_chrom, end, '+'), next_cn))
+        if raw_idx > 0:
+            prev_cn = raw_segs[raw_idx - 1][2]
+            if seg_cn >= LOCAL_FOLDBACK_RESCUE_CN_RATIO * prev_cn:
+                boundary_specs.append(('left', (primary_chrom, start, '-'), prev_cn))
+
+        for side, boundary_endpoint, outside_cn in boundary_specs:
+            if region is not None:
+                _chrom, region_start, region_end = region
+                if not (region_start <= boundary_endpoint[1] <= region_end):
+                    continue
+            if seg_cn < LOCAL_FOLDBACK_RESCUE_CN_RATIO * outside_cn:
+                continue
+
+            for sv, _sv_cn, _sv_rc in sv_by_endpoint.get(boundary_endpoint, []):
+                if sv.is_foldback():
+                    continue
+
+                landed = _sv_other_endpoint(sv, boundary_endpoint)
+                if landed is None:
+                    continue
+                landed_info = endpoint_to_seg.get(landed)
+                if landed_info is None:
+                    continue
+
+                landed_idx, landed_seg = landed_info
+                l_start, l_end, landed_cn, _l_cov, _l_rc = landed_seg
+                if landed[2] == '+':
+                    exit_endpoint = (landed[0], l_start, '-')
+                    neighbor_idx = landed_idx - 1
+                else:
+                    exit_endpoint = (landed[0], l_end, '+')
+                    neighbor_idx = landed_idx + 1
+
+                landed_chrom_segs = chrom_segs.get(landed[0], [])
+                if not (0 <= neighbor_idx < len(landed_chrom_segs)):
+                    continue
+                neighbor_cn = landed_chrom_segs[neighbor_idx][2]
+                if landed_cn < LOCAL_FOLDBACK_RESCUE_CN_RATIO * neighbor_cn:
+                    continue
+
+                for fb_sv, fb_cn, _fb_rc in foldbacks_by_endpoint.get(exit_endpoint, []):
+                    if fb_sv in moved_foldbacks:
+                        continue
+                    if getattr(fb_sv, 'TST', False):
+                        continue
+                    sv_cn = sv_cn_map.get(fb_sv, fb_cn)
+                    if isinstance(sv_cn, tuple):
+                        sv_cn = sv_cn[0]
+                    fb_count = _foldback_cn_count(sv_cn)
+                    moved_foldbacks.add(fb_sv)
+                    anchor = {
+                        'boundary_side': side,
+                        'boundary_endpoint': boundary_endpoint,
+                        'boundary_sv': sv,
+                        'landed_endpoint': landed,
+                        'landed_segment': (landed[0], l_start, l_end, landed_cn),
+                        'foldback': fb_sv,
+                        'count': fb_count,
+                        'boundary_cn': seg_cn,
+                        'boundary_outside_cn': outside_cn,
+                        'landed_cn': landed_cn,
+                        'landed_neighbor_cn': neighbor_cn,
+                    }
+                    anchors.append(anchor)
+
+                    if verbose:
+                        print(f"  [{label}] anchor count {fb_count}: "
+                              f"{boundary_endpoint[0]}:{boundary_endpoint[1]}({boundary_endpoint[2]})")
+                        print(f"       boundary {side}: raw CN={seg_cn:.3f} "
+                              f"-> outside CN={outside_cn:.3f}")
+                        print(f"       via SV: {sv}")
+                        print(f"       landed block: {landed[0]}:{l_start}-{l_end}  "
+                              f"CN={landed_cn:.3f} -> neighbor CN={neighbor_cn:.3f}")
+                        print(f"       displaced foldback: {fb_sv}")
+
+    return anchors
+
+
+def _local_rescue_cut_point(anchor):
+    pos = anchor['boundary_endpoint'][1]
+    if anchor['boundary_side'] == 'right':
+        return pos
+    return pos - 1
+
+
+def _apply_local_foldback_rescue_anchors(new_segments, lf, rf, anchors,
+                                         verbose=False,
+                                         label='local_foldback_rescue'):
+    """
+    Move displaced foldback counts to pre-detected anchor boundaries.
+
+    Anchors are found on raw graph segments before simplification.  Their cut
+    points are added before vector construction, so the target boundary should
+    now be a segment start/end.
+    """
+    if not new_segments or not anchors:
+        return []
+
+    l_bp_idx = {seg[1]: i for i, seg in enumerate(new_segments)}
+    r_bp_idx = {seg[2]: i for i, seg in enumerate(new_segments)}
+    corrections = []
+    moved_foldbacks = set()
+
+    for anchor in anchors:
+        fb_sv = anchor['foldback']
+        if fb_sv in moved_foldbacks:
+            continue
+        fb_count = anchor['count']
+        side = anchor['boundary_side']
+        boundary_endpoint = anchor['boundary_endpoint']
+
+        old_slot = _foldback_vector_slot(fb_sv, l_bp_idx, r_bp_idx)
+        if old_slot is not None:
+            old_side, old_idx = old_slot
+            old_vec = lf if old_side == 'lf' else rf
+            old_vec[old_idx] = max(0, old_vec[old_idx] - fb_count)
+
+        if side == 'right' and boundary_endpoint[1] in r_bp_idx:
+            target_idx = r_bp_idx[boundary_endpoint[1]]
+            rf[target_idx] += fb_count
+            new_slot = ('rf', target_idx)
+        elif side == 'left' and boundary_endpoint[1] in l_bp_idx:
+            target_idx = l_bp_idx[boundary_endpoint[1]]
+            lf[target_idx] += fb_count
+            new_slot = ('lf', target_idx)
+        else:
+            continue
+
+        fb_sv.local_resolved = True
+        moved_foldbacks.add(fb_sv)
+        correction = dict(anchor)
+        correction['old_slot'] = old_slot
+        correction['new_slot'] = new_slot
+        correction['target_cn'] = new_segments[target_idx][3]
+        corrections.append(correction)
+
+        if verbose:
+            old_desc = 'unassigned' if old_slot is None else f"{old_slot[0]}[{old_slot[1]}]"
+            print(f"  [{label}] moved foldback count {fb_count}: {old_desc} -> "
+                  f"{new_slot[0]}[{new_slot[1]}]")
+            print(f"       boundary {side}: {boundary_endpoint[0]}:{boundary_endpoint[1]}"
+                  f"({boundary_endpoint[2]})  raw CN={anchor['boundary_cn']:.3f}; "
+                  f"target CN={correction['target_cn']:.3f} "
+                  f"-> outside CN={anchor['boundary_outside_cn']:.3f}")
+            print(f"       via SV: {anchor['boundary_sv']}")
+            landed_chrom, l_start, l_end, landed_cn = anchor['landed_segment']
+            print(f"       landed block: {landed_chrom}:{l_start}-{l_end}  "
+                  f"CN={landed_cn:.3f} -> neighbor CN={anchor['landed_neighbor_cn']:.3f}")
+            print(f"       displaced foldback: {fb_sv}")
+
+    return corrections
+
+
+def _trim_local_rescue_outside_flank(new_segments, anchors, verbose=False):
+    """Remove a terminal low-CN outside flank created by a rescue-anchor cut."""
+    if not new_segments or not anchors:
+        return None
+
+    for anchor in anchors:
+        side = anchor['boundary_side']
+        chrom, pos, _strand = anchor['boundary_endpoint']
+        if side == 'right':
+            outside_start = pos + 1
+            if (new_segments[-1][0] == chrom
+                    and new_segments[-1][1] == outside_start):
+                removed = new_segments.pop(-1)
+                if verbose:
+                    print(f"  [local_foldback_rescue] trimmed outside flank: "
+                          f"{removed[0]}:{removed[1]}-{removed[2]}")
+                return 'right'
+        else:
+            outside_end = pos - 1
+            if (new_segments[0][0] == chrom
+                    and new_segments[0][2] == outside_end):
+                removed = new_segments.pop(0)
+                if verbose:
+                    print(f"  [local_foldback_rescue] trimmed outside flank: "
+                          f"{removed[0]}:{removed[1]}-{removed[2]}")
+                return 'left'
+    return None
 
 
 # ── graph file parser ─────────────────────────────────────────────────────────
@@ -209,7 +499,8 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
     # TST duplicate check below.
     real_fb_spans = defaultdict(list)
     for sv, _cn, _rc in svs:
-        if sv.is_foldback():
+        if (sv.is_foldback()
+                and _foldback_passes_recon_cn_filter(sv, chrom_segs)):
             if sv.strand1 == '+':
                 existing_fb_cuts.add((sv.chrom1, sv.bp2))
             else:
@@ -318,11 +609,21 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                 synth = SV(chrom, fbi_bp1, '+', chrom, fbi_bp2, '+')
                 synth.TST = True
 
-                if verbose:
-                    print(f"       -> Injecting synthetic FBI: {chrom}:{fbi_bp1}(+) <-> "
-                          f"{chrom}:{fbi_bp2}(+)  CN={cn_tst:.2f}")
+                synth_cn_change = _foldback_flank_cn_change(synth, chrom_segs)
+                if not _foldback_passes_flank_cn_filter(
+                        synth, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
+                    if verbose:
+                        print(f"       -> Synthetic FBI skipped: flank CN change "
+                              f"{synth_cn_change:.3f} < "
+                              f"{MIN_TST_FOLDBACK_FLANK_CN_CHANGE:.3f}")
+                else:
+                    if verbose:
+                        cn_msg = "unknown" if synth_cn_change is None else f"{synth_cn_change:.3f}"
+                        print(f"       -> Injecting synthetic FBI: {chrom}:{fbi_bp1}(+) <-> "
+                              f"{chrom}:{fbi_bp2}(+)  CN={cn_tst:.2f}  "
+                              f"flank_CN_delta={cn_msg}")
 
-                synthetic.append((synth, cn_tst, 0))
+                    synthetic.append((synth, cn_tst, 0))
 
                 # If the far ends share a chromosome and are within foldback
                 # distance, the fold also lives there — inject an FBI on that
@@ -350,13 +651,24 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                                 print(f"       -> Far-side FBI skipped: direct foldback "
                                       f"already at {fc_i} cut {far_cut[1]}")
                         else:
-                            synth_far.TST = True
-                            synthetic.append((synth_far, cn_tst, 0))
-                            if verbose:
-                                d = synth_far.strand1
-                                print(f"       -> Also injecting far-side FBI: "
-                                      f"{fc_i}:{synth_far.bp1}({d}) <-> "
-                                      f"{fc_i}:{synth_far.bp2}({d})  CN={cn_tst:.2f}")
+                            synth_far_cn_change = _foldback_flank_cn_change(synth_far, chrom_segs)
+                            if not _foldback_passes_flank_cn_filter(
+                                    synth_far, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
+                                if verbose:
+                                    print(f"       -> Far-side FBI skipped: flank CN change "
+                                          f"{synth_far_cn_change:.3f} < "
+                                          f"{MIN_TST_FOLDBACK_FLANK_CN_CHANGE:.3f}")
+                            else:
+                                synth_far.TST = True
+                                synthetic.append((synth_far, cn_tst, 0))
+                                if verbose:
+                                    d = synth_far.strand1
+                                    cn_msg = ("unknown" if synth_far_cn_change is None
+                                              else f"{synth_far_cn_change:.3f}")
+                                    print(f"       -> Also injecting far-side FBI: "
+                                          f"{fc_i}:{synth_far.bp1}({d}) <-> "
+                                          f"{fc_i}:{synth_far.bp2}({d})  CN={cn_tst:.2f}  "
+                                          f"flank_CN_delta={cn_msg}")
 
     # Deduplicate: multiple SV pairs may produce the same synthetic FBI at the
     # same coordinates.  Keep the entry with the highest CN.
@@ -431,7 +743,8 @@ def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_
     # ── foldback SVs grouped by chromosome ───────────────────────────────────
     fb_by_chrom = defaultdict(list)
     for sv, _cn, _rc in svs:
-        if sv.is_foldback(max_distance=fb_dist_cut):
+        if (sv.is_foldback(max_distance=fb_dist_cut)
+                and _foldback_passes_recon_cn_filter(sv, chrom_segs)):
             # After sort_breakpoints(): bp1 <= bp2, strand1 == strand2
             fb_by_chrom[sv.chrom1].append((sv.bp1, sv.bp2, sv.strand1))
 
@@ -563,14 +876,18 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
     """
     svs, chrom_segs = parse_graph_file(graph_file)
 
-    n_foldbacks = sum(1 for sv, _, _ in svs if sv.is_foldback(max_distance=fb_dist_cut))
+    n_foldbacks = sum(1 for sv, _, _ in svs
+                      if sv.is_foldback(max_distance=fb_dist_cut)
+                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
     if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
         return [None] * len(regions)
 
     raw_svs = svs
     svs = find_tst_foldbacks(raw_svs, chrom_segs, fb_dist=fb_dist_cut, verbose=verbose)
 
-    n_foldbacks = sum(1 for sv, _, _ in svs if sv.is_foldback(max_distance=fb_dist_cut))
+    n_foldbacks = sum(1 for sv, _, _ in svs
+                      if sv.is_foldback(max_distance=fb_dist_cut)
+                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
     if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
         svs = raw_svs
 
@@ -578,7 +895,8 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
     sv_cn_map = {sv: cn for sv, cn, _rc in svs}
     foldbacks_by_chrom = defaultdict(list)
     for sv, _cn, _rc in svs:
-        if sv.is_foldback(max_distance=fb_dist_cut):
+        if (sv.is_foldback(max_distance=fb_dist_cut)
+                and _foldback_passes_recon_cn_filter(sv, chrom_segs)):
             foldbacks_by_chrom[sv.chrom1].append(sv)
 
     results = []
@@ -626,6 +944,16 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
                 cut_points.add(sv.bp2)
             else:                     # left (--) foldback: outer endpoint is bp1 - 1
                 cut_points.add(sv.bp1 - 1)
+
+        local_rescue_anchors = _find_local_foldback_rescue_anchors(
+            svs, sv_cn_map, chrom_segs, chrom,
+            region=(chrom, region_start, region_end),
+            verbose=verbose
+        )
+        for anchor in local_rescue_anchors:
+            cut_points.add(_local_rescue_cut_point(anchor))
+            fb = anchor['foldback']
+            fb_endpoints.update((fb.bp1, fb.bp2))
 
         if verbose:
             print(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
@@ -858,6 +1186,10 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
                 if sv.bp2 in r_bp_idx:
                     rf[r_bp_idx[sv.bp2]] += fb_count
 
+        _apply_local_foldback_rescue_anchors(
+            new_segments, lf, rf, local_rescue_anchors, verbose=verbose
+        )
+
         if verbose:
             print(f"  Step 6 – CN/LF/RF vectors ({len(new_segments)} segments):")
             print(f"    {'idx':>3}  {'start':>12}  {'end':>12}  {'CN_float':>9}  {'cn':>4}  {'lf':>4}  {'rf':>4}")
@@ -882,7 +1214,7 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
 
 # ── whole-graph fallback ──────────────────────────────────────────────────────
 
-def whole_graph_as_region(graph_file, centromere_dict=None):
+def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False):
     """
     Treat all segments in the graph as a single BFB region (the --whole_graph
     fallback).
@@ -900,14 +1232,18 @@ def whole_graph_as_region(graph_file, centromere_dict=None):
     """
     svs_raw, chrom_segs = parse_graph_file(graph_file)
 
-    n_foldbacks = sum(1 for sv, _, _ in svs_raw if sv.is_foldback())
+    n_foldbacks = sum(1 for sv, _, _ in svs_raw
+                      if sv.is_foldback()
+                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
     if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
         return [], [], [], [], [], {}, ''
 
     raw_svs = svs_raw
     svs_raw = find_tst_foldbacks(raw_svs, chrom_segs)
 
-    n_foldbacks = sum(1 for sv, _, _ in svs_raw if sv.is_foldback())
+    n_foldbacks = sum(1 for sv, _, _ in svs_raw
+                      if sv.is_foldback()
+                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
     if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
         svs_raw = raw_svs
 
@@ -926,16 +1262,34 @@ def whole_graph_as_region(graph_file, centromere_dict=None):
     primary_chrom = max(chrom_cn_length, key=chrom_cn_length.__getitem__)
     region_start, region_end = chrom_ranges[primary_chrom]
     region = (primary_chrom, region_start, region_end)
+    local_rescue_anchors = _find_local_foldback_rescue_anchors(
+        svs_raw, {sv: cn for sv, cn, _rc in svs_raw}, chrom_segs,
+        primary_chrom, region=region, verbose=verbose
+    )
+
+    n_resolved_foldbacks = (
+        sum(1 for sv, _, _ in svs_raw
+            if sv.is_foldback()
+            and _foldback_passes_recon_cn_filter(sv, chrom_segs))
+        + sum(1 for anchor in local_rescue_anchors
+              if not anchor['foldback'].is_in_region(region)[0]
+              and not anchor['foldback'].is_in_region(region)[1])
+    )
+    if n_resolved_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
+        local_rescue_anchors = []
 
     # Foldback cut points
     breakpoints = set()
     for sv in svs_list:
         flag1, flag2 = sv.is_in_region(region)
-        if sv.is_foldback() and flag1 and flag2:
+        if (sv.is_foldback() and flag1 and flag2
+                and _foldback_passes_recon_cn_filter(sv, chrom_segs)):
             if sv.strand1 == '+':
                 breakpoints.add(sv.bp2)
             else:
                 breakpoints.add(sv.bp1 - 1)
+    for anchor in local_rescue_anchors:
+        breakpoints.add(_local_rescue_cut_point(anchor))
 
     # Sort original segments and build new_segments via weighted average
     orig_segs = sorted(chrom_segs[primary_chrom], key=lambda x: x[0])
@@ -966,12 +1320,16 @@ def whole_graph_as_region(graph_file, centromere_dict=None):
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
     centro = centromere_dict.get(primary_chrom)
+    anchor_trimmed_side = _trim_local_rescue_outside_flank(
+        new_segments, local_rescue_anchors, verbose=verbose
+    )
     if new_segments:
-        if centro is None or new_segments[-1][2] < centro:
-            new_segments.pop(0)   # p-arm: remove leftmost (centromere is to the right)
-        else:
-            new_segments.pop(-1)  # q-arm: remove rightmost (centromere is to the left)
-
+        arm_trim_side = 'left' if centro is None or new_segments[-1][2] < centro else 'right'
+        if anchor_trimmed_side is None or anchor_trimmed_side != arm_trim_side:
+            if arm_trim_side == 'left':
+                new_segments.pop(0)   # p-arm: remove leftmost (centromere is to the right)
+            else:
+                new_segments.pop(-1)  # q-arm: remove rightmost (centromere is to the left)
     # Build cn/lf/rf vectors
     cn = [round(seg[3]) - 1 for seg in new_segments]
     l_bp = [seg[1] for seg in new_segments]
@@ -980,12 +1338,17 @@ def whole_graph_as_region(graph_file, centromere_dict=None):
     rf = [0] * len(cn)
     for sv in svs_list:
         flag1, flag2 = sv.is_in_region(region)
-        if sv.is_foldback() and flag1 and flag2:
+        if (sv.is_foldback() and flag1 and flag2
+                and _foldback_passes_recon_cn_filter(sv, chrom_segs)):
             fb_count = _foldback_cn_count(sv_info[sv][0])
             if sv.strand1 == '-' and sv.bp1 in l_bp:
                 lf[l_bp.index(sv.bp1)] += fb_count
             elif sv.strand1 == '+' and sv.bp2 in r_bp:
                 rf[r_bp.index(sv.bp2)] += fb_count
+
+    _apply_local_foldback_rescue_anchors(
+        new_segments, lf, rf, local_rescue_anchors, verbose=verbose
+    )
 
     return new_segments, cn, lf, rf, svs_list, sv_info, primary_chrom
 
