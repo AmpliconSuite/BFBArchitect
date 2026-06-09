@@ -1,3 +1,4 @@
+import logging
 import re
 from collections import defaultdict, deque
 
@@ -13,6 +14,7 @@ LOCAL_FOLDBACK_RESCUE_CN_RATIO = 1.25
 MIN_RAW_FOLDBACK_FLANK_CN_CHANGE = 0.2
 MIN_TST_FOLDBACK_FLANK_CN_CHANGE = 1.0
 TST_FOLDBACK_CN_METHOD = 'max'
+LOGGER = logging.getLogger('BFBArchitect')
 
 
 # ── helpers (ported from ampclasslib/bfb_regions.py) ─────────────────────────
@@ -344,14 +346,14 @@ def _find_local_foldback_rescue_anchors(svs, sv_cn_map, chrom_segs,
                     anchors.append(anchor)
 
                     if verbose:
-                        print(f"  [{label}] anchor count {fb_count}: "
+                        LOGGER.info(f"  [{label}] anchor count {fb_count}: "
                               f"{boundary_endpoint[0]}:{boundary_endpoint[1]}({boundary_endpoint[2]})")
-                        print(f"       boundary {side}: raw CN={seg_cn:.3f} "
+                        LOGGER.info(f"       boundary {side}: raw CN={seg_cn:.3f} "
                               f"-> outside CN={outside_cn:.3f}")
-                        print(f"       via SV: {sv}")
-                        print(f"       landed block: {landed[0]}:{l_start}-{l_end}  "
+                        LOGGER.info(f"       via SV: {sv}")
+                        LOGGER.info(f"       landed block: {landed[0]}:{l_start}-{l_end}  "
                               f"CN={landed_cn:.3f} -> neighbor CN={neighbor_cn:.3f}")
-                        print(f"       displaced foldback: {fb_sv}")
+                        LOGGER.info(f"       displaced foldback: {fb_sv}")
 
     return anchors
 
@@ -419,17 +421,17 @@ def _apply_local_foldback_rescue_anchors(new_segments, lf, rf, anchors,
 
         if verbose:
             old_desc = 'unassigned' if old_slot is None else f"{old_slot[0]}[{old_slot[1]}]"
-            print(f"  [{label}] moved foldback count {fb_count}: {old_desc} -> "
+            LOGGER.info(f"  [{label}] moved foldback count {fb_count}: {old_desc} -> "
                   f"{new_slot[0]}[{new_slot[1]}]")
-            print(f"       boundary {side}: {boundary_endpoint[0]}:{boundary_endpoint[1]}"
+            LOGGER.info(f"       boundary {side}: {boundary_endpoint[0]}:{boundary_endpoint[1]}"
                   f"({boundary_endpoint[2]})  raw CN={anchor['boundary_cn']:.3f}; "
                   f"target CN={correction['target_cn']:.3f} "
                   f"-> outside CN={anchor['boundary_outside_cn']:.3f}")
-            print(f"       via SV: {anchor['boundary_sv']}")
+            LOGGER.info(f"       via SV: {anchor['boundary_sv']}")
             landed_chrom, l_start, l_end, landed_cn = anchor['landed_segment']
-            print(f"       landed block: {landed_chrom}:{l_start}-{l_end}  "
+            LOGGER.info(f"       landed block: {landed_chrom}:{l_start}-{l_end}  "
                   f"CN={landed_cn:.3f} -> neighbor CN={anchor['landed_neighbor_cn']:.3f}")
-            print(f"       displaced foldback: {fb_sv}")
+            LOGGER.info(f"       displaced foldback: {fb_sv}")
 
     return corrections
 
@@ -448,7 +450,7 @@ def _trim_local_rescue_outside_flank(new_segments, anchors, verbose=False):
                     and new_segments[-1][1] == outside_start):
                 removed = new_segments.pop(-1)
                 if verbose:
-                    print(f"  [local_foldback_rescue] trimmed outside flank: "
+                    LOGGER.info(f"  [local_foldback_rescue] trimmed outside flank: "
                           f"{removed[0]}:{removed[1]}-{removed[2]}")
                 return 'right'
         else:
@@ -457,7 +459,7 @@ def _trim_local_rescue_outside_flank(new_segments, anchors, verbose=False):
                     and new_segments[0][2] == outside_end):
                 removed = new_segments.pop(0)
                 if verbose:
-                    print(f"  [local_foldback_rescue] trimmed outside flank: "
+                    LOGGER.info(f"  [local_foldback_rescue] trimmed outside flank: "
                           f"{removed[0]}:{removed[1]}-{removed[2]}")
                 return 'left'
     return None
@@ -685,11 +687,11 @@ def apply_deletion_cn_correction(chrom_segs, svs, verbose=False):
             continue
         if _deletion_crosses_foldback(span, svs):
             if verbose:
-                print(f"  Deletion CN correction skipped: {sv} crosses a foldback")
+                LOGGER.info(f"  Deletion CN correction skipped: {sv} crosses a foldback")
             continue
         if not _deletion_span_is_cn_drop(span, corrected):
             if verbose:
-                print(f"  Deletion CN correction skipped: {sv} span is not a CN drop")
+                LOGGER.info(f"  Deletion CN correction skipped: {sv} span is not a CN drop")
             continue
 
         new_segs = []
@@ -714,11 +716,11 @@ def apply_deletion_cn_correction(chrom_segs, svs, verbose=False):
         corrected[chrom] = new_segs
 
     if verbose and corrections:
-        print(f"  Deletion CN correction: {len(corrections)} segment adjustment(s)")
+        LOGGER.info(f"  Deletion CN correction: {len(corrections)} segment adjustment(s)")
         for c in corrections:
             chrom, seg_start, seg_end = c['segment']
             overlap_start, overlap_end = c['overlap']
-            print(f"    {c['sv']}  DEL_CN={c['sv_cn']:.3f}  "
+            LOGGER.info(f"    {c['sv']}  DEL_CN={c['sv_cn']:.3f}  "
                   f"{chrom}:{seg_start}-{seg_end} overlap "
                   f"{overlap_start}-{overlap_end}  "
                   f"+{c['delta_cn']:.3f} -> CN={c['corrected_cn']:.3f}")
@@ -908,14 +910,14 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                            for b1, b2 in real_fb_spans.get(fc_i, [])):
                         if verbose:
                             cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
-                            print(f"[TST] Candidate {chrom}:{pos_i}({dir_i}) <-> "
+                            LOGGER.info(f"[TST] Candidate {chrom}:{pos_i}({dir_i}) <-> "
                                   f"{chrom}:{pos_j}({dir_j}) "
                                   f"[{abs(pos_i - pos_j)} bp apart]  "
                                   f"skipped (far ends are direct foldback endpoints)")
-                            print(f"       SV1: {sv_i}  CN={cn_i:.2f}  rc={rc_i}")
-                            print(f"       SV2: {sv_j}  CN={cn_j:.2f}  rc={rc_j}  "
+                            LOGGER.info(f"       SV1: {sv_i}  CN={cn_i:.2f}  rc={rc_i}")
+                            LOGGER.info(f"       SV2: {sv_j}  CN={cn_j:.2f}  rc={rc_j}  "
                                   f"CN_ratio={cn_ratio:.2f}")
-                            print(f"       Far ends: {fc_i}:{fp_i}({fd_i})  "
+                            LOGGER.info(f"       Far ends: {fc_i}:{fp_i}({fd_i})  "
                                   f"and  {fc_j}:{fp_j}({fd_j})")
                         continue
 
@@ -925,20 +927,20 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
 
                 if verbose:
                     status = "confirmed" if path is not None else "rejected (no shard path)"
-                    print(f"[TST] Candidate {chrom}:{pos_i}({dir_i}) <-> {chrom}:{pos_j}({dir_j}) "
+                    LOGGER.info(f"[TST] Candidate {chrom}:{pos_i}({dir_i}) <-> {chrom}:{pos_j}({dir_j}) "
                           f"[{abs(pos_i - pos_j)} bp apart]  {status}")
                     cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
-                    print(f"       SV1: {sv_i}  CN={cn_i:.2f}  rc={rc_i}")
-                    print(f"       SV2: {sv_j}  CN={cn_j:.2f}  rc={rc_j}  CN_ratio={cn_ratio:.2f}")
-                    print(f"       Far ends: {fc_i}:{fp_i}({fd_i})  and  {fc_j}:{fp_j}({fd_j})")
+                    LOGGER.info(f"       SV1: {sv_i}  CN={cn_i:.2f}  rc={rc_i}")
+                    LOGGER.info(f"       SV2: {sv_j}  CN={cn_j:.2f}  rc={rc_j}  CN_ratio={cn_ratio:.2f}")
+                    LOGGER.info(f"       Far ends: {fc_i}:{fp_i}({fd_i})  and  {fc_j}:{fp_j}({fd_j})")
                     if path is not None:
                         if path:
                             total_shard_bp = sum(e - s for _, s, e in path)
                             hops = ' -> '.join(f"{c}:{s}-{e} [{e-s} bp]" for c, s, e in path)
-                            print(f"       Shard path ({len(path)} hop{'s' if len(path) != 1 else ''}, "
+                            LOGGER.info(f"       Shard path ({len(path)} hop{'s' if len(path) != 1 else ''}, "
                                   f"{total_shard_bp} bp total): {hops}")
                         else:
-                            print(f"       Shard path: concordant connection (0 shard hops)")
+                            LOGGER.info(f"       Shard path: concordant connection (0 shard hops)")
 
                 if path is None:
                     continue
@@ -947,7 +949,7 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                 coords = _tst_local_foldback_coords(pos_i, dir_i, pos_j, dir_j)
                 if coords is None:
                     if verbose:
-                        print("       WARNING: degenerate coordinates, skipping")
+                        LOGGER.info("       WARNING: degenerate coordinates, skipping")
                     continue
                 fbi_bp1, fbi_bp2 = coords
 
@@ -958,21 +960,21 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                 synth_cn_change = _foldback_flank_cn_change(synth, chrom_segs)
                 if _near_duplicate_direct_foldback(synth, real_fb_spans):
                     if verbose:
-                        print(f"       -> Synthetic FBI skipped: near-duplicate "
+                        LOGGER.info(f"       -> Synthetic FBI skipped: near-duplicate "
                               f"direct foldback {chrom}:{fbi_bp1}-{fbi_bp2}")
                 elif not _sv_in_regions(region_by_chrom, synth):
                     if verbose:
-                        print(f"       -> Synthetic FBI skipped: outside local region")
+                        LOGGER.info(f"       -> Synthetic FBI skipped: outside local region")
                 elif not _foldback_passes_flank_cn_filter(
                         synth, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
                     if verbose:
-                        print(f"       -> Synthetic FBI skipped: flank CN change "
+                        LOGGER.info(f"       -> Synthetic FBI skipped: flank CN change "
                               f"{synth_cn_change:.3f} < "
                               f"{MIN_TST_FOLDBACK_FLANK_CN_CHANGE:.3f}")
                 else:
                     if verbose:
                         cn_msg = "unknown" if synth_cn_change is None else f"{synth_cn_change:.3f}"
-                        print(f"       -> Injecting synthetic FBI: {chrom}:{fbi_bp1}(+) <-> "
+                        LOGGER.info(f"       -> Injecting synthetic FBI: {chrom}:{fbi_bp1}(+) <-> "
                               f"{chrom}:{fbi_bp2}(+)  CN={cn_tst:.2f}  "
                               f"flank_CN_delta={cn_msg}")
 
@@ -989,22 +991,22 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                                    else synth_far.bp1)
                         if far_cut in existing_fb_cuts:
                             if verbose:
-                                print(f"       -> Far-side FBI skipped: direct foldback "
+                                LOGGER.info(f"       -> Far-side FBI skipped: direct foldback "
                                       f"already at {fc_i} cut {far_cut[1]}")
                         elif _near_duplicate_direct_foldback(synth_far, real_fb_spans):
                             if verbose:
-                                print(f"       -> Far-side FBI skipped: near-duplicate "
+                                LOGGER.info(f"       -> Far-side FBI skipped: near-duplicate "
                                       f"direct foldback {fc_i}:{synth_far.bp1}-"
                                       f"{synth_far.bp2}")
                         else:
                             synth_far_cn_change = _foldback_flank_cn_change(synth_far, chrom_segs)
                             if not _sv_in_regions(region_by_chrom, synth_far):
                                 if verbose:
-                                    print(f"       -> Far-side FBI skipped: outside local region")
+                                    LOGGER.info(f"       -> Far-side FBI skipped: outside local region")
                             elif not _foldback_passes_flank_cn_filter(
                                     synth_far, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
                                 if verbose:
-                                    print(f"       -> Far-side FBI skipped: flank CN change "
+                                    LOGGER.info(f"       -> Far-side FBI skipped: flank CN change "
                                           f"{synth_far_cn_change:.3f} < "
                                           f"{MIN_TST_FOLDBACK_FLANK_CN_CHANGE:.3f}")
                             else:
@@ -1014,7 +1016,7 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                                     d = synth_far.strand1
                                     cn_msg = ("unknown" if synth_far_cn_change is None
                                               else f"{synth_far_cn_change:.3f}")
-                                    print(f"       -> Also injecting far-side FBI: "
+                                    LOGGER.info(f"       -> Also injecting far-side FBI: "
                                           f"{fc_i}:{synth_far.bp1}({d}) <-> "
                                           f"{fc_i}:{synth_far.bp2}({d})  CN={cn_tst:.2f}  "
                                           f"flank_CN_delta={cn_msg}")
@@ -1277,10 +1279,10 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
         for (chrom, region_start, region_end), (raw_segs, too_many_segments) in zip(regions, region_raw_segs):
             if not raw_segs:
                 if verbose:
-                    print(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
-                    print("  No segments found in region.")
+                    LOGGER.info(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
+                    LOGGER.info("  No segments found in region.")
             elif too_many_segments and (verbose or report_skips):
-                print(f"[subsect_graph_for_region] Skipping "
+                LOGGER.info(f"[subsect_graph_for_region] Skipping "
                       f"{chrom}:{region_start}-{region_end}: "
                       f"{len(raw_segs)} graph segments exceeds "
                       f"--max-graph-segments={max_segments}.")
@@ -1311,13 +1313,13 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
     for (chrom, region_start, region_end), (raw_segs, too_many_segments) in zip(regions, region_raw_segs):
         if not raw_segs:
             if verbose:
-                print(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
-                print("  No segments found in region.")
+                LOGGER.info(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
+                LOGGER.info("  No segments found in region.")
             results.append(None)
             continue
         if too_many_segments:
             if verbose or report_skips:
-                print(f"[subsect_graph_for_region] Skipping "
+                LOGGER.info(f"[subsect_graph_for_region] Skipping "
                       f"{chrom}:{region_start}-{region_end}: "
                       f"{len(raw_segs)} graph segments exceeds "
                       f"--max-graph-segments={max_segments}.")
@@ -1366,20 +1368,20 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
             fb_endpoints.update((fb.bp1, fb.bp2))
 
         if verbose:
-            print(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
-            print(f"  Raw segments ({len(raw_segs)}):")
+            LOGGER.info(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
+            LOGGER.info(f"  Raw segments ({len(raw_segs)}):")
             for i, (s, e, cn, cov, rc) in enumerate(raw_segs):
-                print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}  cov={cov:.1f}  rc={rc}")
-            print(f"  Foldback SVs ({len(foldback_svs)}):")
+                LOGGER.info(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}  cov={cov:.1f}  rc={rc}")
+            LOGGER.info(f"  Foldback SVs ({len(foldback_svs)}):")
             for sv in foldback_svs:
                 sv_cn = sv_cn_map.get(sv, 0.0)
                 direction = sv.strand1 * 2
                 cut = sv.bp2 if sv.strand1 == '+' else sv.bp1 - 1
-                print(f"    {direction}  {sv.chrom1}:{sv.bp1}-{sv.bp2}  CN={sv_cn:.2f}  cut_point={cut}")
+                LOGGER.info(f"    {direction}  {sv.chrom1}:{sv.bp1}-{sv.bp2}  CN={sv_cn:.2f}  cut_point={cut}")
             if not foldback_svs:
-                print("    (none)")
-            print(f"  Cut points:   {sorted(cut_points)}")
-            print(f"  FB endpoints: {sorted(fb_endpoints)}")
+                LOGGER.info("    (none)")
+            LOGGER.info(f"  Cut points:   {sorted(cut_points)}")
+            LOGGER.info(f"  FB endpoints: {sorted(fb_endpoints)}")
 
         segs = list(raw_segs)
 
@@ -1413,9 +1415,9 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
             segs.insert(all_idx[0], merged)
 
         if verbose:
-            print(f"  Step 1 – merge inner foldback loops: {len(raw_segs)} → {len(segs)} segments")
+            LOGGER.info(f"  Step 1 – merge inner foldback loops: {len(raw_segs)} → {len(segs)} segments")
             for i, (s, e, cn, cov, rc) in enumerate(segs):
-                print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
+                LOGGER.info(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
 
         n_after_step1 = len(segs)
 
@@ -1473,10 +1475,10 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
         n_after_step2 = len(segs)
 
         if verbose:
-            print(f"  Step 2 – remove small deletions (<{small_seg_size} bp, CN >1 below both neighbors): "
+            LOGGER.info(f"  Step 2 – remove small deletions (<{small_seg_size} bp, CN >1 below both neighbors): "
                   f"{n_after_step1} → {n_after_step2} segments")
             for i, (s, e, cn, cov, rc) in enumerate(segs):
-                print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
+                LOGGER.info(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
 
         # ── Step 3: absorb remaining tiny segments unconditionally ─────────────
         # Segments < min_seg_size bp add noise to the CN vector regardless of CN.
@@ -1521,9 +1523,9 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
         n_after_step3 = len(segs)
 
         if verbose:
-            print(f"  Step 3 – absorb tiny (<{min_seg_size} bp): {n_after_step2} → {n_after_step3} segments")
+            LOGGER.info(f"  Step 3 – absorb tiny (<{min_seg_size} bp): {n_after_step2} → {n_after_step3} segments")
             for i, (s, e, cn, cov, rc) in enumerate(segs):
-                print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
+                LOGGER.info(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
 
         # ── Step 4: merge adjacent CN-similar segments ─────────────────────────
         # Cut points are hard merge boundaries.
@@ -1555,10 +1557,10 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
             segs = new_segs
 
         if verbose:
-            print(f"  Step 4 – merge CN-similar (abs_tol={cn_tol}, cv_tol={cn_cv_tol}): "
+            LOGGER.info(f"  Step 4 – merge CN-similar (abs_tol={cn_tol}, cv_tol={cn_cv_tol}): "
                   f"{n_after_step3} → {len(segs)} segments")
             for i, (s, e, cn, cov, rc) in enumerate(segs):
-                print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
+                LOGGER.info(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
 
         # ── Step 5: apply foldback cut points ─────────────────────────────────
         # Pass segments through unchanged.  If a cut point falls strictly inside
@@ -1577,14 +1579,14 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
                 new_segments.append((chrom, cur, seg_end, seg_cn, seg_cov, seg_rc))
 
         if verbose:
-            print(f"  Step 5 – apply cut points: {len(segs)} input → {len(new_segments)} segments")
+            LOGGER.info(f"  Step 5 – apply cut points: {len(segs)} input → {len(new_segments)} segments")
             for i, (ch, s, e, cn, cov, rc) in enumerate(new_segments):
                 cut_flag = "  [cut here]" if e in cut_points else ""
-                print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}{cut_flag}")
+                LOGGER.info(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}{cut_flag}")
 
         if max_segments is not None and len(new_segments) > max_segments:
             if verbose or report_skips:
-                print(f"[subsect_graph_for_region] Skipping "
+                LOGGER.info(f"[subsect_graph_for_region] Skipping "
                       f"{chrom}:{region_start}-{region_end}: "
                       f"{len(new_segments)} reconstruction segments exceeds "
                       f"--max-graph-segments={max_segments}.")
@@ -1618,25 +1620,25 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
 
         if verbose:
             if hard_deletion_contractions:
-                print(f"  Step 6b – contract hard deletion vectors: "
+                LOGGER.info(f"  Step 6b – contract hard deletion vectors: "
                       f"{len(hard_deletion_contractions)} contraction(s)")
                 for contraction in hard_deletion_contractions:
                     _lch, ls, le, left_cn, *_ = contraction['left']
                     _gch, gs, ge, gap_cn, *_ = contraction['gap']
                     _rch, rs, re, right_cn, *_ = contraction['right']
                     _mch, ms, me, merged_cn_float, *_ = contraction['merged']
-                    print(f"    contracted {gs}-{ge} CN={gap_cn:.3f} "
+                    LOGGER.info(f"    contracted {gs}-{ge} CN={gap_cn:.3f} "
                           f"between {ls}-{le} CN={left_cn:.3f} and "
                           f"{rs}-{re} CN={right_cn:.3f} -> "
                           f"{ms}-{me} CN_float={merged_cn_float:.3f} "
                           f"cn={contraction['merged_cn']} "
                           f"lf={contraction['merged_lf']} "
                           f"rf={contraction['merged_rf']}")
-            print(f"  Step 6 – CN/LF/RF vectors ({len(new_segments)} segments):")
-            print(f"    {'idx':>3}  {'start':>12}  {'end':>12}  {'CN_float':>9}  {'cn':>4}  {'lf':>4}  {'rf':>4}")
+            LOGGER.info(f"  Step 6 – CN/LF/RF vectors ({len(new_segments)} segments):")
+            LOGGER.info(f"    {'idx':>3}  {'start':>12}  {'end':>12}  {'CN_float':>9}  {'cn':>4}  {'lf':>4}  {'rf':>4}")
             for i, seg in enumerate(new_segments):
                 cn_flag = "  *** cn<=0" if cn_vals[i] <= 0 else ""
-                print(f"    {i:>3}  {seg[1]:>12}  {seg[2]:>12}  {seg[3]:>9.3f}  {cn_vals[i]:>4}  {lf[i]:>4}  {rf[i]:>4}{cn_flag}")
+                LOGGER.info(f"    {i:>3}  {seg[1]:>12}  {seg[2]:>12}  {seg[3]:>9.3f}  {cn_vals[i]:>4}  {lf[i]:>4}  {rf[i]:>4}{cn_flag}")
             unmatched = []
             for sv in foldback_svs:
                 if sv.strand1 == '-' and sv.bp1 not in l_bp_idx:
@@ -1644,9 +1646,9 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
                 elif sv.strand1 == '+' and sv.bp2 not in r_bp_idx:
                     unmatched.append(f"++ foldback bp2={sv.bp2} not a segment end → rf contribution lost")
             if unmatched:
-                print("  WARNING – unmatched foldbacks (CN not assigned to lf/rf):")
+                LOGGER.info("  WARNING – unmatched foldbacks (CN not assigned to lf/rf):")
                 for msg in unmatched:
-                    print(f"    {msg}")
+                    LOGGER.info(f"    {msg}")
 
         results.append((new_segments, cn_vals, lf, rf, region_svs, sv_info))
 
@@ -1701,7 +1703,7 @@ def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False,
     if (max_primary_segments is not None
             and primary_segment_count > max_primary_segments):
         if verbose or report_skips:
-            print(f"[whole_graph_as_region] Skipping {primary_chrom}: "
+            LOGGER.info(f"[whole_graph_as_region] Skipping {primary_chrom}: "
                   f"{primary_segment_count} graph segments exceeds "
                   f"--max-graph-segments={max_primary_segments}.")
         return [], [], [], [], [], {}, ''
@@ -1819,14 +1821,14 @@ def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False,
         _contract_hard_deletion_vectors(new_segments, cn, lf, rf)
     )
     if verbose and hard_deletion_contractions:
-        print(f"  [whole_graph_as_region] contracted hard deletion vectors: "
+        LOGGER.info(f"  [whole_graph_as_region] contracted hard deletion vectors: "
               f"{len(hard_deletion_contractions)} contraction(s)")
         for contraction in hard_deletion_contractions:
             _lch, ls, le, left_cn, *_ = contraction['left']
             _gch, gs, ge, gap_cn, *_ = contraction['gap']
             _rch, rs, re, right_cn, *_ = contraction['right']
             _mch, ms, me, merged_cn_float, *_ = contraction['merged']
-            print(f"    contracted {gs}-{ge} CN={gap_cn:.3f} "
+            LOGGER.info(f"    contracted {gs}-{ge} CN={gap_cn:.3f} "
                   f"between {ls}-{le} CN={left_cn:.3f} and "
                   f"{rs}-{re} CN={right_cn:.3f} -> "
                   f"{ms}-{me} CN_float={merged_cn_float:.3f} "

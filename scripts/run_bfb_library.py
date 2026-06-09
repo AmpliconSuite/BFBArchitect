@@ -1,6 +1,9 @@
 import sys
 import os
 import argparse
+import logging
+
+LOGGER = logging.getLogger("run_bfb_library")
 
 # Ensure we can import bfbarchitect
 # If not installed via pip, add the project root to sys.path
@@ -31,13 +34,13 @@ def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
     Demonstrate how to use the BFBArchitect library API to reconstruct BFB sequences
     from an AA-format _graph.txt file.
     """
-    print(f"--- BFBArchitect Library API ---")
-    print(f"Input graph: {graph_file}")
+    LOGGER.info("--- BFBArchitect Library API ---")
+    LOGGER.info(f"Input graph: {graph_file}")
     if max_whole_graph_segments is not None:
         max_graph_segments = max_whole_graph_segments
 
     if not os.path.exists(graph_file):
-        print(f"Error: Graph file {graph_file} not found.")
+        LOGGER.error(f"Graph file {graph_file} not found.")
         return
 
     results = reconstruct_bfb_from_graph(
@@ -58,10 +61,10 @@ def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
         
         write_bfb_graph(graph_out, res['new_segments'], res['svs'], res['sv_info'])
         write_bfb_cycles(cycle_out, res['new_segments'], res['bfb_strings'], res['scores'], res['multiplicity'])
-        print(f"  Written: {graph_out}, {cycle_out}")
+        LOGGER.info(f"  Written: {graph_out}, {cycle_out}")
 
         # Optional visualization
-        print(f"  Visualizing {region_prefix}...")
+        LOGGER.info(f"  Visualizing {region_prefix}...")
         visualize_BFB(
             cycle_file=cycle_out,
             graph_file=graph_out,
@@ -71,6 +74,7 @@ def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
         )
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="[%(name)s:%(levelname)s]\t%(message)s")
     parser = argparse.ArgumentParser(description="Invoke BFBArchitect library API on a graph file.")
     parser.add_argument("graph", help="Path to AA-format _graph.txt file.")
     parser.add_argument("--output_prefix", help="Prefix for output files.", default="bfb_output")

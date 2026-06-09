@@ -1,7 +1,9 @@
 from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
+import logging
 import sys
 import time as _time
 
+LOGGER = logging.getLogger('BFBArchitect')
 
 def _build_bfb_string(consecutive_sequences):
     """Build a flat BFB segment list from sorted (i, j, d, t) tuples."""
@@ -369,7 +371,7 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
 
     build_elapsed = _time.time() - _build_start
     if verbose or score_fn is not None:
-        print(f"  [model built]  n={segment_num}  T={T}  build_time={build_elapsed:.1f}s", flush=True)
+        LOGGER.info(f"  [model built]  n={segment_num}  T={T}  build_time={build_elapsed:.1f}s")
 
     root_lp_logged = [False]
     _terminated_early = [False]
@@ -382,11 +384,11 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
                         lp_bound = model.cbGet(GRB.Callback.MIPNODE_OBJBND)
                         elapsed = model.cbGet(GRB.Callback.RUNTIME)
                         if verbose or score_fn is not None:
-                            print(f"  [root LP]   t={elapsed:.1f}s  LP_bound={lp_bound:.4f}", flush=True)
+                            LOGGER.info(f"  [root LP]   t={elapsed:.1f}s  LP_bound={lp_bound:.4f}")
                         root_lp_logged[0] = True
                         if min_lp_bound is not None and lp_bound > min_lp_bound:
                             if verbose or score_fn is not None:
-                                print(f"  [early termination: LP_bound={lp_bound:.4f} > threshold={min_lp_bound}]", flush=True)
+                                LOGGER.info(f"  [early termination: LP_bound={lp_bound:.4f} > threshold={min_lp_bound}]")
                             model.terminate()
                             _terminated_early[0] = True
             elif where == GRB.Callback.MIPSOL:
@@ -401,13 +403,13 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
                 if score_fn is not None and bfb_str:
                     try:
                         score = score_fn(bfb_str)
-                        print(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  score={score:.4f}", flush=True)
+                        LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  score={score:.4f}")
                     except Exception as e:
-                        print(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  (scoring error: {e})", flush=True)
+                        LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  (scoring error: {e})")
                 elif verbose:
-                    print(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}", flush=True)
+                    LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}")
         except Exception as e:
-            print(f"  [callback error] where={where}: {e}", flush=True)
+            LOGGER.warning(f"  [callback error] where={where}: {e}")
 
     # Optimize and collect solution pool
     if score_fn is not None or verbose or min_lp_bound is not None:

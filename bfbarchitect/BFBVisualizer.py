@@ -367,7 +367,7 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
         plt.title(cell_line+' '+str(chrom)+arm, fontsize=16)
         plt.savefig(output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'), dpi = 300)
         plt.close()
-        print('Saved figure to '+output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'))
+        logger.info('Saved figure to '+output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

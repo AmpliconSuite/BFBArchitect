@@ -1,15 +1,19 @@
 # BFBArchitect — Design TODO
 
-## 1. Bidirectional BFB assessment
+## 1. Polarity reversal
 
-**Status:** Future
+**Status:** Done
 
 BFB reconstruction currently assumes a fixed arm orientation. However, if a chromosomal arm undergoes translocation and inversion prior to BFB formation, the BFB sequence would run in the opposite direction relative to the reference. The solver should optionally assess both orientations and return the better-scoring result.
 
-Design thoughts:
-- Flip the segment order + strand orientation before passing to the ILP, run both, take the lower score.
-- Could be a flag (`--bidirectional`) or always-on with the better result reported.
-- Need to decide how to handle cases where both orientations score similarly (ties).
+Implemented:
+- `--reverse_polarity` flips segment order and swaps left/right foldback vectors before ILP reconstruction.
+- Reverse-polarity solver paths are mapped back to the original segment numbering before scoring/output.
+- Graph-mode result dictionaries record whether `reverse_polarity` was used.
+
+Possible future extension:
+- Add automatic bidirectional assessment that runs both orientations and reports the better-scoring result.
+- Decide how to handle cases where both orientations score similarly (ties).
 
 ---
 

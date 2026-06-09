@@ -10,3 +10,7 @@ GEMINI.md
 environment.yml
 .idea/
 __pycache__/
+diagnostics/
+scripts/__pycache__/
+scripts/*ccle*.py
+scripts/gen_ccle_tst_report.py
