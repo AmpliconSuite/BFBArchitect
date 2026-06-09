@@ -71,6 +71,9 @@ BFBArchitect.py --graph <AA_graph.txt> --whole_graph --output_prefix <dir/output
 
 # Disable deletion handling, if needed for a control run
 BFBArchitect.py --graph <AA_graph.txt> --no-deletion --output_prefix <dir/output_prefix>
+
+# Run the opposite of the computed BFB polarity
+BFBArchitect.py --graph <AA_graph.txt> --reverse_polarity --output_prefix <dir/output_prefix>
 ```
 `--region` and `--whole_graph` are mutually exclusive.
 
@@ -177,6 +180,7 @@ results = reconstruct_bfb_from_graph(
     centromere_dict=centromere_dict,
     deletion=True,  # Optional; default is True. Set False for a no-deletion control.
     threads=8,    # Optional: number of ILP solver threads (default: 8)
+    reverse_polarity=False,  # Optional: run the opposite computed polarity.
     silent=True   # Optional: suppress terminal output/logs
 )
 # results is a list of dicts, one per detected BFB region
@@ -208,6 +212,7 @@ Each result dict contains:
 | `bfb_strings` | `list[list[int]]` | Reconstructed BFB paths (segment indices) |
 | `scores` | `list[float]` | Per-candidate score (lower is better) |
 | `multiplicity` | `int` | ILP multiplicity factor |
+| `reverse_polarity` | `bool` | Whether the opposite computed polarity was used |
 | `svs` | `list[SV]` | Discordant SVs in the region |
 | `sv_info` | `dict[SV, (float, int)]` | Per-SV predicted CN and read count |
 
@@ -226,6 +231,7 @@ BFB_strings, scores, multiplicity = reconstruct_bfb(
     new_segments, cn, lf, rf,
     centromere_dict.get(chrom, 0),
     threads=8,  # Optional: number of ILP solver threads (default: 8)
+    reverse_polarity=True,  # Optional: run the opposite computed polarity
 )
 
 # Optionally write output files and visualize:

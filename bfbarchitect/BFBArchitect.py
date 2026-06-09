@@ -376,9 +376,20 @@ def trim_background_segments(new_segments, cn, lf, rf):
         new_segments, cn, lf, rf = new_segments[:-1], cn[:-1], lf[:-1], rf[:-1]
     return new_segments, cn, lf, rf
 
+def _reverse_polarity_vectors(cn, lf, rf):
+    """Return CN/LF/RF vectors in the opposite reference polarity."""
+    return cn[::-1], rf[::-1], lf[::-1]
+
+def _map_reverse_polarity_string(BFB_string, segment_count):
+    """Map a reverse-polarity solver path back to original segment numbering."""
+    return [
+        -(segment_count - abs(seg) + 1) if seg > 0 else (segment_count - abs(seg) + 1)
+        for seg in BFB_string
+    ]
+
 def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multiple=False,
                     verbose=False, log_file=None, silent=False, threads=8, track_solve=False,
-                    min_lp_bound=25):
+                    min_lp_bound=25, reverse_polarity=False):
     """
     Reconstruct BFB sequences from pre-segmented copy-number and foldback data.
     """
@@ -393,29 +404,38 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         if solver is None:
             solver = detect_solver()
         cn0, lf0, rf0 = cn[:], lf[:], rf[:]
+        solve_cn, solve_lf, solve_rf = cn[:], lf[:], rf[:]
+        if reverse_polarity:
+            solve_cn, solve_lf, solve_rf = _reverse_polarity_vectors(cn, lf, rf)
         max_pos = max(seg[2] for seg in new_segments)
         start_segment = -len(new_segments) if max_pos < centromere_pos else 1
         multiplicity = 1
         cn_bound = 15 if solver == 'gurobi' else 12
-        while max(cn) / multiplicity > cn_bound or (sum(lf0) + sum(rf0) + 1) / multiplicity > cn_bound:
+        while max(solve_cn) / multiplicity > cn_bound or (sum(solve_lf) + sum(solve_rf) + 1) / multiplicity > cn_bound:
             multiplicity += 1
         logger.info(f'Solver: {solver}')
+        logger.info(f'Reverse polarity: {reverse_polarity}')
         logger.info(f'Start segment: {start_segment}')
         logger.info(f'cn0: {cn0}')
         logger.info(f'lf0: {lf0}')
         logger.info(f'rf0: {rf0}')
+        if reverse_polarity:
+            logger.info(f'reverse_cn0: {solve_cn}')
+            logger.info(f'reverse_lf0: {solve_lf}')
+            logger.info(f'reverse_rf0: {solve_rf}')
         logger.info(f'Multiplicity: {multiplicity}')
-        cn_scaled = [c / multiplicity for c in cn]
-        lf_scaled = [c / multiplicity for c in lf]
-        rf_scaled = [c / multiplicity for c in rf]
+        cn_scaled = [c / multiplicity for c in solve_cn]
+        lf_scaled = [c / multiplicity for c in solve_lf]
+        rf_scaled = [c / multiplicity for c in solve_rf]
         if not silent:
-            print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity})...")
+            polarity_label = ", reverse_polarity=True" if reverse_polarity else ""
+            print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity}{polarity_label})...")
         _verbose = verbose if not silent else False
         _score_fn = None
         if (_verbose or track_solve) and solver == 'gurobi':
             _null_log = logging.getLogger('_bfb_score_null')
             _null_log.addHandler(logging.NullHandler())
-            _cn0, _lf0, _rf0, _mult = cn0, lf0, rf0, multiplicity
+            _cn0, _lf0, _rf0, _mult = solve_cn[:], solve_lf[:], solve_rf[:], multiplicity
             _score_fn = lambda s: (compute_bfb_scores(_cn0, _lf0, _rf0, [s], _mult,
                                                       _null_log, silent=True) or [float('inf')])[0]
         if multiple:
@@ -436,6 +456,11 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
                                                           max_threads=threads)
             BFB_strings = [BFB_string]
         logger.info(f'ILP objective value: {obj_val}')
+        if reverse_polarity:
+            BFB_strings = [
+                _map_reverse_polarity_string(BFB_string, len(new_segments))
+                for BFB_string in BFB_strings
+            ]
         scores = compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
                                     observed_cn=[seg[3] - 1 for seg in new_segments], silent=silent)
         return BFB_strings, scores, multiplicity
@@ -443,7 +468,7 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         if silent:
             logger.setLevel(old_level)
 
-def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=True, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25):
+def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=True, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25, reverse_polarity=False):
     if solver is None:
         solver = detect_solver()
     if centromere_dict is None:
@@ -456,7 +481,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     logger.info(f'Command: python {Path(__file__).resolve()} --bam {bam_fn} --cns {cns_fn} --region {region} --output_prefix {output_prefix}' +
                  (' --segmentation' if segmentation else '') + (' --no-deletion' if not deletion else '') + (' --coverage ' + str(coverage) if coverage != None else '') + 
                  (' --multiple' if multiple else '') + (' --no_expansion' if no_expansion else '') + (f' --min_sv_cn {min_sv_cn}' if min_sv_cn != 0.75 else '') + 
-                 (f' --min_mapq {min_mapq}' if min_mapq != 20 else ''))
+                 (f' --min_mapq {min_mapq}' if min_mapq != 20 else '') + (' --reverse_polarity' if reverse_polarity else ''))
     normal_cov = get_normal_coverage(cns_fn, bam_fn) if coverage == None else coverage
     logger.info(f'Normal coverage: {normal_cov}')
     if min_sv_cn * normal_cov / 2 < 3:
@@ -528,21 +553,30 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
                 i = r_bp.index(sv.bp2)
                 rf[i] += round(2*count/normal_cov)
     cn0, lf0, rf0 = cn[:], lf[:], rf[:]
+    solve_cn, solve_lf, solve_rf = cn[:], lf[:], rf[:]
+    if reverse_polarity:
+        solve_cn, solve_lf, solve_rf = _reverse_polarity_vectors(cn, lf, rf)
     max_pos = max(l_bp + r_bp)
     start_segment = -len(segments) if max_pos < _lookup_chrom(centromere_dict, chrom, 'centromere data') else 1
     multiplicity = 1
     cn_bound = 15 if solver == 'gurobi' else 12
-    while max(cn)/multiplicity > cn_bound or (sum(lf0) + sum(rf0) + 1)/multiplicity > cn_bound:
+    while max(solve_cn)/multiplicity > cn_bound or (sum(solve_lf) + sum(solve_rf) + 1)/multiplicity > cn_bound:
         multiplicity += 1
+    logger.info(f'Reverse polarity: {reverse_polarity}')
     logger.info(f'Start segment: {start_segment}')
     logger.info(f'cn0: {cn0}')
     logger.info(f'lf0: {lf0}')
     logger.info(f'rf0: {rf0}')
+    if reverse_polarity:
+        logger.info(f'reverse_cn0: {solve_cn}')
+        logger.info(f'reverse_lf0: {solve_lf}')
+        logger.info(f'reverse_rf0: {solve_rf}')
     logger.info(f'Multiplicity: {multiplicity}')
-    cn_scaled = [c / multiplicity for c in cn]
-    lf_scaled = [c / multiplicity for c in lf]
-    rf_scaled = [c / multiplicity for c in rf]
-    print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity})...")
+    cn_scaled = [c / multiplicity for c in solve_cn]
+    lf_scaled = [c / multiplicity for c in solve_lf]
+    rf_scaled = [c / multiplicity for c in solve_rf]
+    polarity_label = ", reverse_polarity=True" if reverse_polarity else ""
+    print(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity}{polarity_label})...")
     if multiple:
         BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
                                                         max_threads=threads, log_file=log_file, verbose=verbose,
@@ -560,6 +594,11 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
                                                           max_threads=threads)
             BFB_strings = [BFB_string]
     logger.info(f'ILP objective value: {obj_val}')
+    if reverse_polarity:
+        BFB_strings = [
+            _map_reverse_polarity_string(BFB_string, len(segments))
+            for BFB_string in BFB_strings
+        ]
     coverage_vals = [c for (c, _) in coverage_and_rc]
     scores = compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
                                observed_cn=[2*c/normal_cov - 1 for c in coverage_vals],
@@ -583,7 +622,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                                track_solve=False, min_lp_bound=25,
                                max_graph_segments=100,
                                max_whole_graph_segments=None,
-                               deletion=True):
+                               deletion=True, reverse_polarity=False):
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -615,13 +654,15 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                 new_segments, cn, lf, rf,
                 centromere_dict.get(primary_chrom, 0),
                 solver=solver, multiple=multiple, verbose=verbose, log_file=log_file, silent=silent,
-                threads=threads, track_solve=track_solve, min_lp_bound=min_lp_bound)
+                threads=threads, track_solve=track_solve, min_lp_bound=min_lp_bound,
+                reverse_polarity=reverse_polarity)
             results.append({
                 'region': region,
                 'new_segments': new_segments,
                 'bfb_strings': BFB_strings,
                 'scores': scores,
                 'multiplicity': multiplicity,
+                'reverse_polarity': reverse_polarity,
                 'svs': svs_list,
                 'sv_info': sv_info,
             })
@@ -655,13 +696,15 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                 new_segments, cn, lf, rf,
                 centromere_dict.get(chrom, 0),
                 solver=solver, multiple=multiple, verbose=verbose, log_file=log_file, silent=silent,
-                threads=threads, track_solve=track_solve, min_lp_bound=min_lp_bound)
+                threads=threads, track_solve=track_solve, min_lp_bound=min_lp_bound,
+                reverse_polarity=reverse_polarity)
             results.append({
                 'region': cur_region,
                 'new_segments': new_segments,
                 'bfb_strings': BFB_strings,
                 'scores': scores,
                 'multiplicity': multiplicity,
+                'reverse_polarity': reverse_polarity,
                 'svs': region_svs,
                 'sv_info': sv_info,
             })
@@ -671,7 +714,7 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
                        whole_graph=False, region=None, gene=None,
                        centromere_dict=None, verbose=False, threads=8, min_lp_bound=25,
                        max_graph_segments=100, max_whole_graph_segments=None,
-                       deletion=True):
+                       deletion=True, reverse_polarity=False):
     """
     CLI entry point to reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -693,7 +736,8 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
         multiple=multiple, whole_graph=whole_graph, region=region,
         verbose=verbose, log_file=log_file, threads=threads, min_lp_bound=min_lp_bound,
         max_graph_segments=max_graph_segments,
-        deletion=deletion
+        deletion=deletion,
+        reverse_polarity=reverse_polarity
     )
     if not results:
         return
@@ -748,6 +792,7 @@ def main():
     parser.add_argument("--min_mapq", type=int, default=20, help="Minimum mapping quality for SV calling.")
     parser.add_argument("--output_prefix", help="Prefix of output files.", required=True)
     parser.add_argument("--multiple", help="Reconstruct multiple BFB candidates", action='store_true')
+    parser.add_argument("--reverse_polarity", help="Run the opposite of the computed BFB polarity.", action='store_true')
     parser.add_argument("--solver", help="ILP solver to use. Options: gurobi (defualt), mosek, and cbc", default=None)
     parser.add_argument("-t", "--threads", type=int, default=8, help="Number of threads for the ILP solver (default: 8).")
     parser.add_argument("--centromere", help="Path to a BED file of centromere regions.", default=None)
@@ -775,9 +820,10 @@ def main():
                            centromere_dict=centromere_dict, verbose=args.verbose, threads=args.threads,
                            min_lp_bound=args.min_lp_bound,
                            max_graph_segments=args.max_graph_segments,
-                           deletion=args.deletion)
+                           deletion=args.deletion,
+                           reverse_polarity=args.reverse_polarity)
     elif args.bam and args.cns and args.region:
-        reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict, verbose=args.verbose, threads=args.threads, min_lp_bound=args.min_lp_bound)
+        reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict, verbose=args.verbose, threads=args.threads, min_lp_bound=args.min_lp_bound, reverse_polarity=args.reverse_polarity)
     else:
         parser.error("Provide either --graph or all of --bam, --cns, --region.")
 

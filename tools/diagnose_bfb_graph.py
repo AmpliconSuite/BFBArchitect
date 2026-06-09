@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from bfbarchitect.BFBArchitect import (  # noqa: E402
     CHR_CENTRO,
+    _reverse_polarity_vectors,
     reconstruct_bfb,
     reconstruct_bfb_from_graph,
     trim_background_segments,
@@ -117,7 +118,9 @@ def _run_subsection(graph_file: str, regions, fb_cutoff: int, disable_tst: bool,
         graph_input.find_tst_foldbacks = original
 
 
-def _print_region_result(graph_file: str, region, data, fb_cutoff: int, solver: str) -> None:
+def _print_region_result(
+    graph_file: str, region, data, fb_cutoff: int, solver: str, reverse_polarity: bool
+) -> None:
     print(f"\nRegion {region[0]}:{region[1]}-{region[2]}  fb_dist_cut={fb_cutoff}")
     if data is None:
         print("  No region data")
@@ -158,12 +161,21 @@ def _print_region_result(graph_file: str, region, data, fb_cutoff: int, solver: 
         CHR_CENTRO.get(region[0], 0),
         solver=solver,
         silent=True,
+        reverse_polarity=reverse_polarity,
     )
     print(f"  trimmed_cn={trim_cn}")
     print(f"  trimmed_lf={trim_lf}")
     print(f"  trimmed_rf={trim_rf}")
+    if reverse_polarity:
+        reverse_cn, reverse_lf, reverse_rf = _reverse_polarity_vectors(
+            trim_cn, trim_lf, trim_rf
+        )
+        print(f"  reverse_cn={reverse_cn}")
+        print(f"  reverse_lf={reverse_lf}")
+        print(f"  reverse_rf={reverse_rf}")
+    polarity_label = " reverse_polarity" if reverse_polarity else ""
     print(f"  multiplicity={multiplicity}")
-    print(f"  scores={scores}")
+    print(f"  scores{polarity_label}={scores}")
     print(f"  bfb_strings={bfb_strings}")
 
 
@@ -174,7 +186,9 @@ def _print_tst_report(graph_file: str, regions) -> None:
     print(buf_path.read_text())
 
 
-def _print_whole_graph(graph_file: str, solver: str, verbose: bool, deletion: bool) -> None:
+def _print_whole_graph(
+    graph_file: str, solver: str, verbose: bool, deletion: bool, reverse_polarity: bool
+) -> None:
     _print_header("Whole-graph reconstruction")
     new_segments, cn, lf, rf, svs, sv_info, chrom = whole_graph_as_region(
         graph_file,
@@ -201,12 +215,19 @@ def _print_whole_graph(graph_file: str, solver: str, verbose: bool, deletion: bo
         CHR_CENTRO.get(chrom, 0),
         solver=solver,
         silent=True,
+        reverse_polarity=reverse_polarity,
     )
     print(f"cn={cn}")
     print(f"lf={lf}")
     print(f"rf={rf}")
+    if reverse_polarity:
+        reverse_cn, reverse_lf, reverse_rf = _reverse_polarity_vectors(cn, lf, rf)
+        print(f"reverse_cn={reverse_cn}")
+        print(f"reverse_lf={reverse_lf}")
+        print(f"reverse_rf={reverse_rf}")
+    polarity_label = " reverse_polarity" if reverse_polarity else ""
     print(f"multiplicity={multiplicity}")
-    print(f"scores={scores}")
+    print(f"scores{polarity_label}={scores}")
     print(f"bfb_strings={bfb_strings}")
 
 
@@ -245,6 +266,11 @@ def main() -> int:
     parser.add_argument("--show-segments", action="store_true", help="Print raw sequence segments")
     parser.add_argument("--verbose", action="store_true", help="Show verbose segmentation trace")
     parser.add_argument("--solver", default="cbc", choices=["cbc", "gurobi", "mosek"])
+    parser.add_argument(
+        "--reverse_polarity",
+        action="store_true",
+        help="Run the opposite of the computed BFB polarity.",
+    )
     args = parser.parse_args()
 
     graph_file = str(Path(args.graph).expanduser())
@@ -278,6 +304,8 @@ def main() -> int:
         label = f"Region reconstruction fb_dist_cut={cutoff}"
         if args.no_tst:
             label += " no_TST"
+        if args.reverse_polarity:
+            label += " reverse_polarity"
         _print_header(label)
         with contextlib.redirect_stderr(io.StringIO()):
             data = _run_subsection(
@@ -289,10 +317,23 @@ def main() -> int:
                 deletion=args.deletion,
             )
         for region, region_data in zip(regions, data):
-            _print_region_result(graph_file, region, region_data, cutoff, args.solver)
+            _print_region_result(
+                graph_file,
+                region,
+                region_data,
+                cutoff,
+                args.solver,
+                args.reverse_polarity,
+            )
 
     if args.whole_graph:
-        _print_whole_graph(graph_file, args.solver, args.verbose, args.deletion)
+        _print_whole_graph(
+            graph_file,
+            args.solver,
+            args.verbose,
+            args.deletion,
+            args.reverse_polarity,
+        )
 
     return 0
 

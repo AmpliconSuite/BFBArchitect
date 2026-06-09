@@ -25,7 +25,8 @@ def _parse_region(region_str):
 
 def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
                     multiple=False, solver=None, verbose=False,
-                    max_graph_segments=100, max_whole_graph_segments=None):
+                    max_graph_segments=100, max_whole_graph_segments=None,
+                    reverse_polarity=False):
     """
     Demonstrate how to use the BFBArchitect library API to reconstruct BFB sequences
     from an AA-format _graph.txt file.
@@ -47,6 +48,7 @@ def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
         multiple=multiple,
         verbose=verbose,
         max_graph_segments=max_graph_segments,
+        reverse_polarity=reverse_polarity,
     )
 
     for i, res in enumerate(results):
@@ -75,6 +77,8 @@ if __name__ == "__main__":
     parser.add_argument("--whole_graph", action="store_true", help="Treat all segments as one region.")
     parser.add_argument("--region", help="Process a specific region only (chr:start-end).", default=None)
     parser.add_argument("--multiple", action="store_true", help="Reconstruct multiple candidates.")
+    parser.add_argument("--reverse_polarity", action="store_true",
+                        help="Run the opposite of the computed BFB polarity.")
     parser.add_argument("--solver", help="Solver to use (gurobi or cbc).", default=None)
     parser.add_argument("--verbose", action="store_true", help="Print per-step segment transforms and CN/LF/RF vectors.")
     parser.add_argument("--max-graph-segments", "--max-whole-graph-segments",
@@ -94,4 +98,5 @@ if __name__ == "__main__":
         max_graph_segments = None
 
     run_bfb_library(args.graph, args.output_prefix, args.whole_graph, parsed_region,
-                    args.multiple, args.solver, args.verbose, max_graph_segments)
+                    args.multiple, args.solver, args.verbose, max_graph_segments,
+                    reverse_polarity=args.reverse_polarity)

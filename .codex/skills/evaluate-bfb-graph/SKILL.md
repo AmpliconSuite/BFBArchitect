@@ -31,6 +31,12 @@ For a no-TST control:
 python tools/diagnose_bfb_graph.py /path/to/*_graph.txt --no-tst
 ```
 
+For an opposite-polarity control:
+
+```bash
+python tools/diagnose_bfb_graph.py /path/to/*_graph.txt --reverse_polarity --whole-graph
+```
+
 Read `docs/bfb_graph_diagnosis.md` for the full workflow and interpretation checklist.
 
 ## Required Analysis Pattern
@@ -44,6 +50,7 @@ Read `docs/bfb_graph_diagnosis.md` for the full workflow and interpretation chec
    - wider manual region if ROI seems truncated
    - 50 kb versus 100 kb foldback cutoff when broad same-strand SVs exist
    - whole-graph mode for compact graphs
+   - reverse-polarity mode when the CN/foldback pattern may fit from the opposite end
 6. Report score components when available.
 7. Distinguish absent foldbacks from observed but undercounted foldbacks.
 
