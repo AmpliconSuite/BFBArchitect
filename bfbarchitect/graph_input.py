@@ -7,9 +7,12 @@ except ImportError:
     from datatypes import SV, CHR_CENTRO
 
 MAX_FOLDBACKS_FOR_GRAPH_RECON = 50
+MAX_GRAPH_RECON_SEGMENTS = 100
+MAX_WHOLE_GRAPH_PRIMARY_SEGMENTS = MAX_GRAPH_RECON_SEGMENTS
 LOCAL_FOLDBACK_RESCUE_CN_RATIO = 1.25
 MIN_RAW_FOLDBACK_FLANK_CN_CHANGE = 0.2
 MIN_TST_FOLDBACK_FLANK_CN_CHANGE = 1.0
+TST_FOLDBACK_CN_METHOD = 'max'
 
 
 # ── helpers (ported from ampclasslib/bfb_regions.py) ─────────────────────────
@@ -53,6 +56,21 @@ def _find_gap_index(point, segs):
 def _foldback_cn_count(sv_cn):
     """Count every observed graph foldback at least once in lf/rf vectors."""
     return max(1, round(sv_cn))
+
+
+def _cn_merge_allowed(cn1, cn2, abs_tol=1.0, cv_tol=0.05):
+    """Allow larger absolute CN differences at high copy number."""
+    mean_cn = (cn1 + cn2) / 2
+    return abs(cn1 - cn2) <= max(abs_tol, cv_tol * mean_cn)
+
+
+def _tst_foldback_cn(cn_i, cn_j):
+    """Estimate synthetic TST foldback CN from its two supporting jump SVs."""
+    if TST_FOLDBACK_CN_METHOD == 'mean':
+        return (cn_i + cn_j) / 2
+    if TST_FOLDBACK_CN_METHOD == 'max':
+        return max(cn_i, cn_j)
+    return min(cn_i, cn_j)
 
 
 def _foldback_flank_cn_change(sv, chrom_segs):
@@ -271,22 +289,25 @@ def _apply_local_foldback_rescue_anchors(new_segments, lf, rf, anchors,
         side = anchor['boundary_side']
         boundary_endpoint = anchor['boundary_endpoint']
 
+        if side == 'right' and boundary_endpoint[1] in r_bp_idx:
+            target_idx = r_bp_idx[boundary_endpoint[1]]
+            new_slot = ('rf', target_idx)
+        elif side == 'left' and boundary_endpoint[1] in l_bp_idx:
+            target_idx = l_bp_idx[boundary_endpoint[1]]
+            new_slot = ('lf', target_idx)
+        else:
+            continue
+
         old_slot = _foldback_vector_slot(fb_sv, l_bp_idx, r_bp_idx)
         if old_slot is not None:
             old_side, old_idx = old_slot
             old_vec = lf if old_side == 'lf' else rf
             old_vec[old_idx] = max(0, old_vec[old_idx] - fb_count)
 
-        if side == 'right' and boundary_endpoint[1] in r_bp_idx:
-            target_idx = r_bp_idx[boundary_endpoint[1]]
+        if new_slot[0] == 'rf':
             rf[target_idx] += fb_count
-            new_slot = ('rf', target_idx)
-        elif side == 'left' and boundary_endpoint[1] in l_bp_idx:
-            target_idx = l_bp_idx[boundary_endpoint[1]]
-            lf[target_idx] += fb_count
-            new_slot = ('lf', target_idx)
         else:
-            continue
+            lf[target_idx] += fb_count
 
         fb_sv.local_resolved = True
         moved_foldbacks.add(fb_sv)
@@ -382,6 +403,74 @@ def parse_graph_file(graph_file):
     return svs, chrom_segs
 
 
+def _deletion_span(sv):
+    """Return the reference interval skipped by an intrachromosomal deletion SV."""
+    if sv.chrom1 != sv.chrom2 or sv.get_SV_type() != 'DEL':
+        return None
+    start = min(sv.bp1, sv.bp2) + 1
+    end = max(sv.bp1, sv.bp2) - 1
+    if start > end:
+        return None
+    return sv.chrom1, start, end
+
+
+def apply_deletion_cn_correction(chrom_segs, svs, verbose=False):
+    """
+    Add deletion-edge CN back to sequence segments skipped by graph DEL edges.
+
+    AA graph sequence-edge CN measures copies that traverse the reference
+    sequence.  A deletion breakpoint edge represents additional copies that skip
+    the interval between its breakpoints.  For reconstruction, those skipped
+    copies should still count toward the segment copy number.
+    """
+    corrected = {
+        chrom: [tuple(seg) for seg in segs]
+        for chrom, segs in chrom_segs.items()
+    }
+    corrections = []
+
+    for sv, del_cn, rc in svs:
+        span = _deletion_span(sv)
+        if span is None or del_cn <= 0:
+            continue
+        chrom, del_start, del_end = span
+        if chrom not in corrected:
+            continue
+
+        new_segs = []
+        for seg_start, seg_end, seg_cn, seg_cov, seg_rc in corrected[chrom]:
+            overlap_start = max(seg_start, del_start)
+            overlap_end = min(seg_end, del_end)
+            if overlap_start <= overlap_end:
+                seg_len = seg_end - seg_start + 1
+                overlap_len = overlap_end - overlap_start + 1
+                delta_cn = del_cn * overlap_len / seg_len
+                seg_cn += delta_cn
+                corrections.append({
+                    'sv': sv,
+                    'sv_cn': del_cn,
+                    'read_count': rc,
+                    'segment': (chrom, seg_start, seg_end),
+                    'overlap': (overlap_start, overlap_end),
+                    'delta_cn': delta_cn,
+                    'corrected_cn': seg_cn,
+                })
+            new_segs.append((seg_start, seg_end, seg_cn, seg_cov, seg_rc))
+        corrected[chrom] = new_segs
+
+    if verbose and corrections:
+        print(f"  Deletion CN correction: {len(corrections)} segment adjustment(s)")
+        for c in corrections:
+            chrom, seg_start, seg_end = c['segment']
+            overlap_start, overlap_end = c['overlap']
+            print(f"    {c['sv']}  DEL_CN={c['sv_cn']:.3f}  "
+                  f"{chrom}:{seg_start}-{seg_end} overlap "
+                  f"{overlap_start}-{overlap_end}  "
+                  f"+{c['delta_cn']:.3f} -> CN={c['corrected_cn']:.3f}")
+
+    return corrected, corrections
+
+
 # ── TST-jump foldback detection ──────────────────────────────────────────────
 
 def _build_graph_lookups(svs, chrom_segs):
@@ -468,7 +557,8 @@ def _shard_path_reachable(start, target, bp_to_seg, sv_index, shard_max_bp, max_
 
 
 def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
-                       fb_dist=50000, far_min=500000, verbose=False):
+                       fb_dist=50000, far_min=100000, verbose=False,
+                       local_regions=None):
     """
     Detect TST-jump (template-switching) foldbacks and inject synthetic FBI SVs.
 
@@ -490,6 +580,22 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
     Returns the input svs list extended with any (synthetic_SV, cn, 0) tuples.
     """
     bp_to_seg, sv_index = _build_graph_lookups(svs, chrom_segs)
+    region_by_chrom = None
+    if local_regions is not None:
+        region_by_chrom = defaultdict(list)
+        for chrom, start, end in local_regions:
+            region_by_chrom[chrom].append((start - fb_dist, end + fb_dist))
+
+    def _in_local_region(chrom, pos):
+        if region_by_chrom is None:
+            return True
+        return any(start <= pos <= end for start, end in region_by_chrom.get(chrom, []))
+
+    def _sv_in_local_region(sv):
+        if region_by_chrom is None:
+            return True
+        return (_in_local_region(sv.chrom1, sv.bp1)
+                or _in_local_region(sv.chrom2, sv.bp2))
 
     # Pre-compute cut-point positions of direct (non-TST) foldbacks so we can
     # skip far-side injections that would duplicate an existing foldback's cut.
@@ -605,12 +711,15 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                         print(f"       WARNING: degenerate coordinates ({fbi_bp1}, {fbi_bp2}), skipping")
                     continue
 
-                cn_tst = min(cn_i, cn_j)
+                cn_tst = _tst_foldback_cn(cn_i, cn_j)
                 synth = SV(chrom, fbi_bp1, '+', chrom, fbi_bp2, '+')
                 synth.TST = True
 
                 synth_cn_change = _foldback_flank_cn_change(synth, chrom_segs)
-                if not _foldback_passes_flank_cn_filter(
+                if not _sv_in_local_region(synth):
+                    if verbose:
+                        print(f"       -> Synthetic FBI skipped: outside local region")
+                elif not _foldback_passes_flank_cn_filter(
                         synth, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
                     if verbose:
                         print(f"       -> Synthetic FBI skipped: flank CN change "
@@ -652,7 +761,10 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                                       f"already at {fc_i} cut {far_cut[1]}")
                         else:
                             synth_far_cn_change = _foldback_flank_cn_change(synth_far, chrom_segs)
-                            if not _foldback_passes_flank_cn_filter(
+                            if not _sv_in_local_region(synth_far):
+                                if verbose:
+                                    print(f"       -> Far-side FBI skipped: outside local region")
+                            elif not _foldback_passes_flank_cn_filter(
                                     synth_far, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
                                 if verbose:
                                     print(f"       -> Far-side FBI skipped: flank CN change "
@@ -685,7 +797,8 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
 
 def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_size=10000,
                                 fb_dist_cut=50000, merge_gap=50000, merge_cn_tol=0.5,
-                                min_cn_step=0.5, merge_padding=150000):
+                                min_cn_step=0.5, merge_padding=150000,
+                                deletion=True, verbose=False):
     """
     Identify BFB-like candidate regions from an AA breakpoint graph file.
 
@@ -719,12 +832,19 @@ def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_
     merge_padding : int
         Padding added to each side of a candidate before merging overlapping
         regions (default 150000).
+    deletion : bool
+        If true, add deletion-edge CN back to skipped sequence segments before
+        detecting BFB candidate regions.
 
     Returns
     -------
     list of (chrom, start, end) tuples in half-open [start, end) coordinates.
     """
     svs, chrom_segs = parse_graph_file(graph_file)
+    if deletion:
+        chrom_segs, _deletion_corrections = apply_deletion_cn_correction(
+            chrom_segs, svs, verbose=verbose
+        )
 
     # ── segment pre-processing ────────────────────────────────────────────────
     chrom_merged = {}
@@ -820,7 +940,10 @@ def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_
 # ── per-region segmentation ───────────────────────────────────────────────────
 
 def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
-                              small_seg_size=50000, min_seg_size=10000, verbose=False):
+                              cn_cv_tol=0.05, small_seg_size=50000,
+                              min_seg_size=10000, verbose=False,
+                              max_segments=MAX_GRAPH_RECON_SEGMENTS,
+                              report_skips=False, deletion=True):
     """
     Extract and resegment AA graph data for each BFB candidate region, returning
     data in the format expected by BFBArchitect's reconstruct_bfb().
@@ -835,8 +958,8 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
     3. Absorb any remaining segments < min_seg_size bp unconditionally into a
        neighbor, respecting cut points.  These are too small to contribute useful
        CN signal and would only add noise to the ILP.
-    4. Merge adjacent segments within cn_tol CN units, respecting foldback outer
-       cut points as hard merge boundaries.
+    4. Merge adjacent segments within max(cn_tol, cn_cv_tol * mean CN),
+       respecting foldback outer cut points as hard merge boundaries.
     5. Apply cut points: pass all segments through unchanged; split any segment
        that a cut point falls strictly inside (rare after prior merging).
     6. Build the cn/lf/rf vectors required by reconstruct_bfb().
@@ -853,7 +976,10 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
     fb_dist_cut : int
         Max bp distance between foldback SV endpoints (default 50000).
     cn_tol : float
-        Max CN difference for merging adjacent segments (default 1.0).
+        Absolute CN floor for merging adjacent segments (default 1.0).
+    cn_cv_tol : float
+        Relative CN tolerance for high-copy segments. Adjacent segments merge
+        if their absolute CN difference is <= max(cn_tol, cn_cv_tol * mean CN).
     small_seg_size : int
         Segments < this many bp with CN >1 below both neighbors are treated as
         deletion artifacts and absorbed (default 50000).
@@ -862,6 +988,12 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
         after deletion removal (default 10000).
     verbose : bool
         Print per-step segment transforms and final CN/LF/RF vectors to stdout.
+    max_segments : int or None
+        Maximum graph/reconstruction segments allowed per region. None disables
+        the cutoff.
+    deletion : bool
+        If true, add deletion-edge CN back to skipped sequence segments before
+        building reconstruction segments and CN/LF/RF vectors.
 
     Returns
     -------
@@ -875,6 +1007,10 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
         sv_info       dict[SV, (cn_float, read_count)]
     """
     svs, chrom_segs = parse_graph_file(graph_file)
+    if deletion:
+        chrom_segs, _deletion_corrections = apply_deletion_cn_correction(
+            chrom_segs, svs, verbose=verbose
+        )
 
     n_foldbacks = sum(1 for sv, _, _ in svs
                       if sv.is_foldback(max_distance=fb_dist_cut)
@@ -882,8 +1018,41 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
     if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
         return [None] * len(regions)
 
+    region_raw_segs = []
+    has_processable_region = False
+    for chrom, region_start, region_end in regions:
+        raw_segs = [
+            (s, e, cn, cov, rc)
+            for s, e, cn, cov, rc in chrom_segs.get(chrom, [])
+            if s < region_end and e > region_start
+        ]
+        too_many_segments = (
+            max_segments is not None and len(raw_segs) > max_segments
+        )
+        region_raw_segs.append((raw_segs, too_many_segments))
+        if raw_segs and not too_many_segments:
+            has_processable_region = True
+
+    if not has_processable_region:
+        results = []
+        for (chrom, region_start, region_end), (raw_segs, too_many_segments) in zip(regions, region_raw_segs):
+            if not raw_segs:
+                if verbose:
+                    print(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
+                    print("  No segments found in region.")
+            elif too_many_segments and (verbose or report_skips):
+                print(f"[subsect_graph_for_region] Skipping "
+                      f"{chrom}:{region_start}-{region_end}: "
+                      f"{len(raw_segs)} graph segments exceeds "
+                      f"--max-graph-segments={max_segments}.")
+            results.append(None)
+        return results
+
     raw_svs = svs
-    svs = find_tst_foldbacks(raw_svs, chrom_segs, fb_dist=fb_dist_cut, verbose=verbose)
+    svs = find_tst_foldbacks(
+        raw_svs, chrom_segs, fb_dist=fb_dist_cut, verbose=verbose,
+        local_regions=regions
+    )
 
     n_foldbacks = sum(1 for sv, _, _ in svs
                       if sv.is_foldback(max_distance=fb_dist_cut)
@@ -900,17 +1069,19 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
             foldbacks_by_chrom[sv.chrom1].append(sv)
 
     results = []
-    for chrom, region_start, region_end in regions:
-        raw_segs = [
-            (s, e, cn, cov, rc)
-            for s, e, cn, cov, rc in chrom_segs.get(chrom, [])
-            if s < region_end and e > region_start
-        ]
-
+    for (chrom, region_start, region_end), (raw_segs, too_many_segments) in zip(regions, region_raw_segs):
         if not raw_segs:
             if verbose:
                 print(f"\n[subsect_graph_for_region] {chrom}:{region_start}-{region_end}")
                 print("  No segments found in region.")
+            results.append(None)
+            continue
+        if too_many_segments:
+            if verbose or report_skips:
+                print(f"[subsect_graph_for_region] Skipping "
+                      f"{chrom}:{region_start}-{region_end}: "
+                      f"{len(raw_segs)} graph segments exceeds "
+                      f"--max-graph-segments={max_segments}.")
             results.append(None)
             continue
 
@@ -1126,7 +1297,9 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
                 if i < len(segs) - 1:
                     s1, e1, cn1, cov1, rc1 = segs[i]
                     s2, e2, cn2, cov2, rc2 = segs[i + 1]
-                    if e1 not in cut_points and abs(cn1 - cn2) <= cn_tol:
+                    if (e1 not in cut_points
+                            and _cn_merge_allowed(cn1, cn2, abs_tol=cn_tol,
+                                                  cv_tol=cn_cv_tol)):
                         l1, l2 = e1 - s1 + 1, e2 - s2 + 1
                         new_segs.append((s1, e2,
                                          (cn1 * l1 + cn2 * l2) / (l1 + l2),
@@ -1143,7 +1316,8 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
             segs = new_segs
 
         if verbose:
-            print(f"  Step 4 – merge CN-similar (tol={cn_tol}): {n_after_step3} → {len(segs)} segments")
+            print(f"  Step 4 – merge CN-similar (abs_tol={cn_tol}, cv_tol={cn_cv_tol}): "
+                  f"{n_after_step3} → {len(segs)} segments")
             for i, (s, e, cn, cov, rc) in enumerate(segs):
                 print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}")
 
@@ -1168,6 +1342,15 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
             for i, (ch, s, e, cn, cov, rc) in enumerate(new_segments):
                 cut_flag = "  [cut here]" if e in cut_points else ""
                 print(f"    {i:>3}: {s:>12}-{e:<12}  size={e-s:>9}  CN={cn:.3f}{cut_flag}")
+
+        if max_segments is not None and len(new_segments) > max_segments:
+            if verbose or report_skips:
+                print(f"[subsect_graph_for_region] Skipping "
+                      f"{chrom}:{region_start}-{region_end}: "
+                      f"{len(new_segments)} reconstruction segments exceeds "
+                      f"--max-graph-segments={max_segments}.")
+            results.append(None)
+            continue
 
         # ── Step 6: build cn/lf/rf vectors ─────────────────────────────────────
         cn_vals = [round(seg[3]) - 1 for seg in new_segments]
@@ -1214,10 +1397,20 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
 
 # ── whole-graph fallback ──────────────────────────────────────────────────────
 
-def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False):
+def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False,
+                          max_primary_segments=MAX_WHOLE_GRAPH_PRIMARY_SEGMENTS,
+                          report_skips=False, deletion=True):
     """
     Treat all segments in the graph as a single BFB region (the --whole_graph
     fallback).
+
+    Parameters
+    ----------
+    graph_file : str
+        Path to an AA _graph.txt file.
+    deletion : bool
+        If true, add deletion-edge CN back to skipped sequence segments before
+        deriving the whole-graph region and vectors.
 
     Returns
     -------
@@ -1231,24 +1424,10 @@ def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False):
         primary_chrom str        chromosome of the primary BFB region
     """
     svs_raw, chrom_segs = parse_graph_file(graph_file)
-
-    n_foldbacks = sum(1 for sv, _, _ in svs_raw
-                      if sv.is_foldback()
-                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
-    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
-        return [], [], [], [], [], {}, ''
-
-    raw_svs = svs_raw
-    svs_raw = find_tst_foldbacks(raw_svs, chrom_segs)
-
-    n_foldbacks = sum(1 for sv, _, _ in svs_raw
-                      if sv.is_foldback()
-                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
-    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
-        svs_raw = raw_svs
-
-    svs_list = [sv for sv, _cn, _rc in svs_raw]
-    sv_info  = {sv: (cn, rc) for sv, cn, rc in svs_raw}
+    if deletion:
+        chrom_segs, _deletion_corrections = apply_deletion_cn_correction(
+            chrom_segs, svs_raw, verbose=verbose
+        )
 
     # Derive the amplified region from the sequence edges.
     # Primary chromosome = highest total CN-weighted length (most amplified content).
@@ -1260,8 +1439,36 @@ def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False):
         chrom_ranges[chrom] = (min(starts), max(ends))
         chrom_cn_length[chrom] = sum((e - s) * cn for s, e, cn, *_ in segs)
     primary_chrom = max(chrom_cn_length, key=chrom_cn_length.__getitem__)
+    primary_segment_count = len(chrom_segs[primary_chrom])
+    if (max_primary_segments is not None
+            and primary_segment_count > max_primary_segments):
+        if verbose or report_skips:
+            print(f"[whole_graph_as_region] Skipping {primary_chrom}: "
+                  f"{primary_segment_count} graph segments exceeds "
+                  f"--max-graph-segments={max_primary_segments}.")
+        return [], [], [], [], [], {}, ''
+
+    n_foldbacks = sum(1 for sv, _, _ in svs_raw
+                      if sv.is_foldback()
+                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
+    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
+        return [], [], [], [], [], {}, ''
+
     region_start, region_end = chrom_ranges[primary_chrom]
     region = (primary_chrom, region_start, region_end)
+
+    raw_svs = svs_raw
+    svs_raw = find_tst_foldbacks(raw_svs, chrom_segs, local_regions=[region])
+
+    n_foldbacks = sum(1 for sv, _, _ in svs_raw
+                      if sv.is_foldback()
+                      and _foldback_passes_recon_cn_filter(sv, chrom_segs))
+    if n_foldbacks > MAX_FOLDBACKS_FOR_GRAPH_RECON:
+        svs_raw = raw_svs
+
+    svs_list = [sv for sv, _cn, _rc in svs_raw]
+    sv_info  = {sv: (cn, rc) for sv, cn, rc in svs_raw}
+
     local_rescue_anchors = _find_local_foldback_rescue_anchors(
         svs_raw, {sv: cn for sv, cn, _rc in svs_raw}, chrom_segs,
         primary_chrom, region=region, verbose=verbose
@@ -1357,7 +1564,7 @@ def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False):
 
 def write_tst_report(graph_file, output_file, bfb_regions=None,
                      shard_max_bp=5000, max_hops=5, fb_dist=50000,
-                     far_min=500000):
+                     far_min=100000):
     """
     Write a human-readable TST-chain report for graph_file to output_file.
 
@@ -1453,7 +1660,7 @@ def write_tst_report(graph_file, output_file, bfb_regions=None,
                 if fbi_bp2 < fbi_bp1:
                     continue
 
-                cn_tst = min(cn_i, cn_j)
+                cn_tst = _tst_foldback_cn(cn_i, cn_j)
                 cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
 
                 # Far-side FBI (if applicable)

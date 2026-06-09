@@ -52,11 +52,11 @@ This will create a file called ```[input].cns```, which is a required argument i
 Then run BFBArchitect to reconstruct potential BFB sequences for any genomic region ```chrom:start-end``` with copy number amplification. (The amplicon region can be detected by standard pipelines like [CoRAL](https://github.com/AmpliconSuite/CoRAL).)
 ### Usage
 ```
-python /path/to/BFBArchitect/bfbarchitect/BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
+python /path/to/BFBArchitect/bfbarchitect/BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
 ```
 BFBArchitect supports reconstructing BFB sequences at the whole-genome level, given CoRAL results at ```CoRAL_output_directory```: 
 ```
-python /path/to/BFBArchitect/scripts/batch_run.py --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
+python /path/to/BFBArchitect/scripts/batch_run.py --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
 ```
 BFBArchitect also supports reconstructing BFB sequences directly from an [AmpliconArchitect](https://github.com/AmpliconSuite/AmpliconArchitect) (or BFBArchitect) `_graph.txt` file, with no BAM or CNS file required. Three modes are supported:
 ```
@@ -68,6 +68,9 @@ BFBArchitect.py --graph <AA_graph.txt> --region chr7:120000000-125000000 --outpu
 
 # Treat all segments as one region — single output at <output_prefix>_BFB_*
 BFBArchitect.py --graph <AA_graph.txt> --whole_graph --output_prefix <dir/output_prefix>
+
+# Disable deletion handling, if needed for a control run
+BFBArchitect.py --graph <AA_graph.txt> --no-deletion --output_prefix <dir/output_prefix>
 ```
 `--region` and `--whole_graph` are mutually exclusive.
 
@@ -83,8 +86,11 @@ BFBArchitect.py --graph <AA_graph.txt> --whole_graph --output_prefix <dir/output
 
 ### Optional arguments (BAM mode)
 - --segmentation: Consider copy number variation when segmenting the amplicon region.
-- --deletion: Handle deletion when reconstructing BFB sequences.
 - --coverage <integer>: Sequencing coverage (if provided, estimating coverage from cns will be skipped)
+
+### Optional arguments (deletion handling)
+- --no-deletion: Disable deletion handling. Deletion handling is enabled by default in both BAM and graph modes. In BAM mode, deletion-support evidence is added back into affected segment copy-number estimates. In graph mode, same-chromosome deletion-edge CN is added back to sequence segments skipped by those deletion edges before constructing the BFB CN vector.
+- --deletion: Enable deletion handling explicitly. This is the default and is retained for compatibility with older commands.
 
 ### Optional arguments (both modes)
 - --multiple: Reconstruct multiple optimal BFB candidate sequences (requires Gurobi)
@@ -92,6 +98,7 @@ BFBArchitect.py --graph <AA_graph.txt> --whole_graph --output_prefix <dir/output
 - -t / --threads <int>: Number of threads for the ILP solver (default: 8)
 - --region <string>: (graph mode) process a specific region only, bypassing auto-detection (e.g. chr7:120000000-125000000). Mutually exclusive with --whole_graph.
 - --whole_graph: (graph mode only) treat all segments as a single region instead of auto-detecting BFB regions
+- --max-graph-segments <int>: (graph mode only) maximum number of graph segments allowed per graph-mode region (default: 100; use 0 to disable)
 - -g / --gene <gtf_file>: Gene annotation for visualization (graph mode only)
 - --centromere <.bed file>: Path to a BED file of centromere regions (≥3 tab-separated columns: chrom, start, end). Multiple rows per chromosome are merged to a single midpoint. Falls back to built-in hg38 defaults if omitted. An example GRCh38 file is provided at `resources/GRCh38_centromere.bed`.
 
@@ -168,6 +175,7 @@ centromere_dict = build_centromere_dict()
 results = reconstruct_bfb_from_graph(
     'path/to/sample_graph.txt',
     centromere_dict=centromere_dict,
+    deletion=True,  # Optional; default is True. Set False for a no-deletion control.
     threads=8,    # Optional: number of ILP solver threads (default: 8)
     silent=True   # Optional: suppress terminal output/logs
 )

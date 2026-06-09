@@ -24,13 +24,16 @@ def _parse_region(region_str):
     return (chrom, int(start), int(end))
 
 def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
-                    multiple=False, solver=None, verbose=False):
+                    multiple=False, solver=None, verbose=False,
+                    max_graph_segments=100, max_whole_graph_segments=None):
     """
     Demonstrate how to use the BFBArchitect library API to reconstruct BFB sequences
     from an AA-format _graph.txt file.
     """
     print(f"--- BFBArchitect Library API ---")
     print(f"Input graph: {graph_file}")
+    if max_whole_graph_segments is not None:
+        max_graph_segments = max_whole_graph_segments
 
     if not os.path.exists(graph_file):
         print(f"Error: Graph file {graph_file} not found.")
@@ -43,6 +46,7 @@ def run_bfb_library(graph_file, output_prefix, whole_graph=False, region=None,
         solver=solver,
         multiple=multiple,
         verbose=verbose,
+        max_graph_segments=max_graph_segments,
     )
 
     for i, res in enumerate(results):
@@ -73,6 +77,11 @@ if __name__ == "__main__":
     parser.add_argument("--multiple", action="store_true", help="Reconstruct multiple candidates.")
     parser.add_argument("--solver", help="Solver to use (gurobi or cbc).", default=None)
     parser.add_argument("--verbose", action="store_true", help="Print per-step segment transforms and CN/LF/RF vectors.")
+    parser.add_argument("--max-graph-segments", "--max-whole-graph-segments",
+                        type=int, default=100, dest="max_graph_segments",
+                        help="Maximum number of graph segments allowed per graph-mode region "
+                             "(default: 100). Use 0 or a negative value "
+                             "to disable this cutoff.")
 
     args = parser.parse_args()
 
@@ -80,6 +89,9 @@ if __name__ == "__main__":
         parser.error("--whole_graph and --region are mutually exclusive.")
 
     parsed_region = _parse_region(args.region) if args.region else None
+    max_graph_segments = args.max_graph_segments
+    if max_graph_segments is not None and max_graph_segments <= 0:
+        max_graph_segments = None
 
     run_bfb_library(args.graph, args.output_prefix, args.whole_graph, parsed_region,
-                    args.multiple, args.solver, args.verbose)
+                    args.multiple, args.solver, args.verbose, max_graph_segments)

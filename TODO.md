@@ -32,3 +32,45 @@ Design thoughts:
 Some AA-format graph files include a path constraints section; others do not. The current `parse_graph_file` ignores it entirely, and the ILP has no mechanism to enforce such constraints.
 
 Design thoughts: deferred until format documentation is available.
+
+---
+
+## 4. Distinguish missing versus undercounted foldbacks in scoring
+
+**Status:** Future
+
+The current BFB score does not clearly separate two different cases:
+
+- A foldback required by the reconstructed BFB string is absent from the graph.
+- A foldback exists at the right boundary, but its graph-estimated SV copy number is lower than the BFB string implies.
+
+These should not carry the same evidence weight. An absent foldback is stronger negative evidence than an observed foldback with noisy or underestimated read support. This matters in AA graph mode, where short junctions, repetitive sequence, mapping artifacts, and local graph complexity can make breakpoint copy number noisier than segment copy number.
+
+Proposed scoring model:
+
+- Treat foldback boundary presence as the primary signal.
+- Penalize expected foldbacks with no matching observed foldback using a higher `absent_foldback_weight`.
+- Penalize observed-but-undercounted foldbacks with a lower `undercounted_foldback_weight`.
+- Let read-pair support and boundary proximity soften the undercount penalty.
+- Keep overcount penalties separate from undercount penalties; extra observed foldback CN may indicate subclonality or graph noise rather than a missing BFB operation.
+
+Sketch:
+
+```text
+if expected_fb > 0 and observed_fb == 0:
+    penalty += absent_foldback_weight * expected_fb
+elif expected_fb > observed_fb:
+    support_factor = f(read_pairs, breakpoint_quality)
+    penalty += undercounted_foldback_weight * (expected_fb - observed_fb) * support_factor
+```
+
+Initial defaults to evaluate:
+
+- `absent_foldback_weight`: current missing-foldback penalty scale.
+- `undercounted_foldback_weight`: 25-50% of absent penalty.
+- `support_factor`: decreases with read support, capped so strong read evidence cannot erase all copy-number mismatch.
+
+Validation cases:
+
+- Graphs with low-CN but real foldbacks, such as `LP6005409-DNA_B02_amplicon1_graph.txt`.
+- Graphs with no foldback evidence at required boundaries, where the high absent-foldback penalty should remain.

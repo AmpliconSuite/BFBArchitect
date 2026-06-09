@@ -443,7 +443,7 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         if silent:
             logger.setLevel(old_level)
 
-def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=False, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25):
+def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=True, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25):
     if solver is None:
         solver = detect_solver()
     if centromere_dict is None:
@@ -454,7 +454,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
         _add_stream_handler(logger)
     start_time = time.time()
     logger.info(f'Command: python {Path(__file__).resolve()} --bam {bam_fn} --cns {cns_fn} --region {region} --output_prefix {output_prefix}' +
-                 (' --segmentation' if segmentation else '') + (' --deletion' if deletion else '') + (' --coverage ' + str(coverage) if coverage != None else '') + 
+                 (' --segmentation' if segmentation else '') + (' --no-deletion' if not deletion else '') + (' --coverage ' + str(coverage) if coverage != None else '') + 
                  (' --multiple' if multiple else '') + (' --no_expansion' if no_expansion else '') + (f' --min_sv_cn {min_sv_cn}' if min_sv_cn != 0.75 else '') + 
                  (f' --min_mapq {min_mapq}' if min_mapq != 20 else ''))
     normal_cov = get_normal_coverage(cns_fn, bam_fn) if coverage == None else coverage
@@ -580,7 +580,10 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
 def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                                multiple=False, whole_graph=False, region=None,
                                verbose=False, log_file=None, silent=False, threads=8,
-                               track_solve=False, min_lp_bound=25):
+                               track_solve=False, min_lp_bound=25,
+                               max_graph_segments=100,
+                               max_whole_graph_segments=None,
+                               deletion=True):
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -594,10 +597,16 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                                   whole_graph_as_region)
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
+    if max_whole_graph_segments is not None:
+        max_graph_segments = max_whole_graph_segments
     results = []
     if whole_graph:
         new_segments, cn, lf, rf, svs_list, sv_info, primary_chrom = whole_graph_as_region(
-            graph_fn, centromere_dict=centromere_dict, verbose=verbose if not silent else False)
+            graph_fn, centromere_dict=centromere_dict, verbose=verbose if not silent else False,
+            max_primary_segments=max_graph_segments, report_skips=not silent,
+            deletion=deletion)
+        if not new_segments and not silent:
+            print('No whole-graph BFB region reconstructed from the graph file.')
         if new_segments:
             region = (primary_chrom, new_segments[0][1], new_segments[-1][2])
             if not silent:
@@ -620,7 +629,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
         if region is not None:
             regions = [region]
         else:
-            regions = find_bfb_candidate_regions(graph_fn)
+            regions = find_bfb_candidate_regions(graph_fn, deletion=deletion)
             if not regions:
                 if not silent:
                     print('No BFB candidate regions found in the graph file.')
@@ -628,7 +637,10 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
             if not silent:
                 print(f'Found {len(regions)} BFB candidate region(s): '
                       + ', '.join(f'{r[0]}:{r[1]}-{r[2]}' for r in regions))
-        region_data = subsect_graph_for_region(graph_fn, regions, verbose=verbose if not silent else False)
+        region_data = subsect_graph_for_region(
+            graph_fn, regions, verbose=verbose if not silent else False,
+            max_segments=max_graph_segments, report_skips=not silent,
+            deletion=deletion)
         for i, (cur_region, data) in enumerate(zip(regions, region_data)):
             if data is None:
                 continue
@@ -657,7 +669,9 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
 
 def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
                        whole_graph=False, region=None, gene=None,
-                       centromere_dict=None, verbose=False, threads=8, min_lp_bound=25):
+                       centromere_dict=None, verbose=False, threads=8, min_lp_bound=25,
+                       max_graph_segments=100, max_whole_graph_segments=None,
+                       deletion=True):
     """
     CLI entry point to reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -667,6 +681,8 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
         from BFBVisualizer import visualize_BFB
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
+    if max_whole_graph_segments is not None:
+        max_graph_segments = max_whole_graph_segments
     log_file = f'{output_prefix}.log'
     logger = create_logger('BFBArchitect', log_file)
     if verbose:
@@ -675,7 +691,9 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
     results = reconstruct_bfb_from_graph(
         graph_fn, centromere_dict=centromere_dict, solver=solver,
         multiple=multiple, whole_graph=whole_graph, region=region,
-        verbose=verbose, log_file=log_file, threads=threads, min_lp_bound=min_lp_bound
+        verbose=verbose, log_file=log_file, threads=threads, min_lp_bound=min_lp_bound,
+        max_graph_segments=max_graph_segments,
+        deletion=deletion
     )
     if not results:
         return
@@ -717,7 +735,13 @@ def main():
     parser.add_argument("--cns", help="Path to a sorted cns file.", default=None)
     parser.add_argument("--region", help="The amplified region (chr:start-end). For --graph: process this specific region only.", default=None)
     parser.add_argument("--segmentation", help="Consider CNV in segmentation", action='store_true')
-    parser.add_argument("--deletion", help="Deletion handling", action='store_true')
+    parser.set_defaults(deletion=True)
+    parser.add_argument("--deletion", dest="deletion", action="store_true",
+                        help="Enable deletion handling (default; retained for compatibility). "
+                             "BAM mode adds deletion-support evidence back into segment CN estimates; "
+                             "graph mode adds same-chromosome DEL-edge CN back to skipped sequence segments.")
+    parser.add_argument("--no-deletion", dest="deletion", action="store_false",
+                        help="Disable deletion handling.")
     parser.add_argument("--coverage", help="Sequencing coverage.", type=float, default=None)
     parser.add_argument("--no_expansion", help="Keep the specified region without expansion", action='store_true')
     parser.add_argument("--min_sv_cn", type=float, default=0.75, help="Minimum copy number for SV calling.")
@@ -731,9 +755,16 @@ def main():
     parser.add_argument("--min-lp-bound", type=float, default=25, dest='min_lp_bound',
                         help="Stop early if the root LP bound exceeds this value (Gurobi only). "
                              "Default: 25. Use 0 or a negative value to disable this cutoff.")
+    parser.add_argument("--max-graph-segments", "--max-whole-graph-segments",
+                        type=int, default=100, dest='max_graph_segments',
+                        help="Maximum number of graph segments allowed per graph-mode region "
+                             "(default: 100). Use 0 or a negative value "
+                             "to disable this cutoff.")
     args = parser.parse_args()
     if args.min_lp_bound is not None and args.min_lp_bound <= 0:
         args.min_lp_bound = None
+    if args.max_graph_segments is not None and args.max_graph_segments <= 0:
+        args.max_graph_segments = None
     centromere_dict = build_centromere_dict(args.centromere)
     if args.graph:
         if args.whole_graph and args.region:
@@ -742,7 +773,9 @@ def main():
         run_bfb_from_graph(args.graph, args.output_prefix, args.multiple, args.solver,
                            args.whole_graph, region=parsed_region, gene=args.gene,
                            centromere_dict=centromere_dict, verbose=args.verbose, threads=args.threads,
-                           min_lp_bound=args.min_lp_bound)
+                           min_lp_bound=args.min_lp_bound,
+                           max_graph_segments=args.max_graph_segments,
+                           deletion=args.deletion)
     elif args.bam and args.cns and args.region:
         reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict, verbose=args.verbose, threads=args.threads, min_lp_bound=args.min_lp_bound)
     else:
