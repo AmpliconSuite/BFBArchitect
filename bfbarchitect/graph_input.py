@@ -147,17 +147,27 @@ def _tst_pair_touches_regions(region_by_chrom, chrom, pos_i, dir_i,
 
 def _near_duplicate_direct_foldback(sv, real_fb_spans,
                                     shared_endpoint_slop=5,
-                                    other_endpoint_slop=5000):
+                                    other_endpoint_slop=5000,
+                                    same_polarity_span_gap=1000):
     """
-    True if sv nearly duplicates a direct foldback by sharing one endpoint.
+    True if sv nearly duplicates a direct foldback.
+
+    The shared-endpoint rule catches synthetic foldbacks that land on the same
+    cut point as a direct foldback. The span-gap rule catches same-polarity TST
+    foldbacks that sit immediately adjacent to a direct foldback without sharing
+    an endpoint, which otherwise double-counts one local foldback structure.
     """
-    for bp1, bp2 in real_fb_spans.get(sv.chrom1, []):
+    for bp1, bp2, strand in real_fb_spans.get(sv.chrom1, []):
         same_left = abs(sv.bp1 - bp1) <= shared_endpoint_slop
         same_right = abs(sv.bp2 - bp2) <= shared_endpoint_slop
         if same_left and abs(sv.bp2 - bp2) <= other_endpoint_slop:
             return True
         if same_right and abs(sv.bp1 - bp1) <= other_endpoint_slop:
             return True
+        if sv.strand1 == strand:
+            span_gap = max(bp1 - sv.bp2, sv.bp1 - bp2, 0)
+            if span_gap <= same_polarity_span_gap:
+                return True
     return False
 
 
@@ -546,6 +556,108 @@ def _contract_hard_deletion_vectors(new_segments, cn, lf, rf,
     return out_segments, out_cn, out_lf, out_rf, contractions
 
 
+def _segment_span_overlaps(seg, span):
+    """Return true if a reconstruction segment overlaps a genomic span."""
+    chrom, start, end = span
+    return seg[0] == chrom and seg[1] <= end and seg[2] >= start
+
+
+def _contract_deletion_bridge_plateaus(new_segments, cn, lf, rf, svs,
+                                       min_cn=5):
+    """
+    Merge adjacent equal-CN slices anchored by graph deletions.
+
+    Foldback/TST cut points intentionally split reconstruction segments so LF/RF
+    counts can be assigned.  We therefore allow foldback-free spacer slices to
+    be absorbed into a neighboring equal-CN state, but we do not merge two
+    foldback-bearing slices into one LF/RF vector entry.
+    """
+    if len(new_segments) < 2 or not svs:
+        return new_segments, cn, lf, rf, []
+
+    deletion_spans = []
+    for entry in svs:
+        sv = entry[0] if isinstance(entry, tuple) else entry
+        span = _deletion_span(sv)
+        if span is not None:
+            deletion_spans.append(span)
+    if not deletion_spans:
+        return new_segments, cn, lf, rf, []
+
+    out_segments = []
+    out_cn = []
+    out_lf = []
+    out_rf = []
+    contractions = []
+    i = 0
+    while i < len(new_segments):
+        group = [new_segments[i]]
+        group_lf = lf[i]
+        group_rf = rf[i]
+        group_cn = cn[i]
+        group_has_foldback = (lf[i] != 0 or rf[i] != 0)
+        deletion_touched = any(
+            _segment_span_overlaps(new_segments[i], span)
+            for span in deletion_spans
+        )
+        j = i + 1
+        while j < len(new_segments):
+            prev = group[-1]
+            cur = new_segments[j]
+            cur_touched = any(
+                _segment_span_overlaps(cur, span)
+                for span in deletion_spans
+            )
+            same_high_state = (
+                prev[0] == cur[0]
+                and group_cn == cn[j]
+                and group_cn >= min_cn
+            )
+            cur_has_foldback = (lf[j] != 0 or rf[j] != 0)
+            if (not same_high_state
+                    or not (deletion_touched or cur_touched)
+                    or (group_has_foldback and cur_has_foldback)):
+                break
+            group.append(cur)
+            group_lf += lf[j]
+            group_rf += rf[j]
+            group_has_foldback = group_has_foldback or cur_has_foldback
+            deletion_touched = deletion_touched or cur_touched
+            j += 1
+
+        if len(group) == 1:
+            out_segments.append(new_segments[i])
+            out_cn.append(cn[i])
+            out_lf.append(lf[i])
+            out_rf.append(rf[i])
+            i += 1
+            continue
+
+        total_len = sum(seg[2] - seg[1] + 1 for seg in group)
+        merged = (
+            group[0][0],
+            group[0][1],
+            group[-1][2],
+            sum(seg[3] * (seg[2] - seg[1] + 1) for seg in group) / total_len,
+            sum(seg[4] * (seg[2] - seg[1] + 1) for seg in group) / total_len,
+            sum(seg[5] for seg in group),
+        )
+        contractions.append({
+            'segments': group,
+            'merged': merged,
+            'merged_cn': group_cn,
+            'merged_lf': group_lf,
+            'merged_rf': group_rf,
+        })
+        out_segments.append(merged)
+        out_cn.append(group_cn)
+        out_lf.append(group_lf)
+        out_rf.append(group_rf)
+        i = j
+
+    return out_segments, out_cn, out_lf, out_rf, contractions
+
+
 # ── graph file parser ─────────────────────────────────────────────────────────
 
 def parse_graph_file(graph_file):
@@ -853,7 +965,7 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                 existing_fb_cuts.add((sv.chrom1, sv.bp2))
             else:
                 existing_fb_cuts.add((sv.chrom1, sv.bp1))
-            real_fb_spans[sv.chrom1].append((sv.bp1, sv.bp2))
+            real_fb_spans[sv.chrom1].append((sv.bp1, sv.bp2, sv.strand1))
 
     # Collect far-jumping breakends indexed by local chromosome.
     # An SV contributes two entries (once per end) so both ends are candidates
@@ -907,7 +1019,7 @@ def find_tst_foldbacks(svs, chrom_segs, shard_max_bp=5000, max_hops=5,
                 if fc_i == fc_j:
                     p_lo, p_hi = min(fp_i, fp_j), max(fp_i, fp_j)
                     if any(abs(b1 - p_lo) <= 5 and abs(b2 - p_hi) <= 5
-                           for b1, b2 in real_fb_spans.get(fc_i, [])):
+                           for b1, b2, _strand in real_fb_spans.get(fc_i, [])):
                         if verbose:
                             cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
                             LOGGER.info(f"[TST] Candidate {chrom}:{pos_i}({dir_i}) <-> "
@@ -1617,6 +1729,11 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
         new_segments, cn_vals, lf, rf, hard_deletion_contractions = (
             _contract_hard_deletion_vectors(new_segments, cn_vals, lf, rf)
         )
+        new_segments, cn_vals, lf, rf, deletion_bridge_contractions = (
+            _contract_deletion_bridge_plateaus(
+                new_segments, cn_vals, lf, rf, svs if deletion else []
+            )
+        )
 
         if verbose:
             if hard_deletion_contractions:
@@ -1630,6 +1747,19 @@ def subsect_graph_for_region(graph_file, regions, fb_dist_cut=50000, cn_tol=1.0,
                     LOGGER.info(f"    contracted {gs}-{ge} CN={gap_cn:.3f} "
                           f"between {ls}-{le} CN={left_cn:.3f} and "
                           f"{rs}-{re} CN={right_cn:.3f} -> "
+                          f"{ms}-{me} CN_float={merged_cn_float:.3f} "
+                          f"cn={contraction['merged_cn']} "
+                          f"lf={contraction['merged_lf']} "
+                          f"rf={contraction['merged_rf']}")
+            if deletion_bridge_contractions:
+                LOGGER.info(f"  Step 6c – contract deletion-bridge plateaus: "
+                      f"{len(deletion_bridge_contractions)} contraction(s)")
+                for contraction in deletion_bridge_contractions:
+                    first = contraction['segments'][0]
+                    last = contraction['segments'][-1]
+                    _mch, ms, me, merged_cn_float, *_ = contraction['merged']
+                    LOGGER.info(f"    merged {len(contraction['segments'])} segment(s) "
+                          f"{first[1]}-{last[2]} -> "
                           f"{ms}-{me} CN_float={merged_cn_float:.3f} "
                           f"cn={contraction['merged_cn']} "
                           f"lf={contraction['merged_lf']} "
@@ -1820,6 +1950,11 @@ def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False,
     new_segments, cn, lf, rf, hard_deletion_contractions = (
         _contract_hard_deletion_vectors(new_segments, cn, lf, rf)
     )
+    new_segments, cn, lf, rf, deletion_bridge_contractions = (
+        _contract_deletion_bridge_plateaus(
+            new_segments, cn, lf, rf, svs_raw if deletion else []
+        )
+    )
     if verbose and hard_deletion_contractions:
         LOGGER.info(f"  [whole_graph_as_region] contracted hard deletion vectors: "
               f"{len(hard_deletion_contractions)} contraction(s)")
@@ -1831,6 +1966,19 @@ def whole_graph_as_region(graph_file, centromere_dict=None, verbose=False,
             LOGGER.info(f"    contracted {gs}-{ge} CN={gap_cn:.3f} "
                   f"between {ls}-{le} CN={left_cn:.3f} and "
                   f"{rs}-{re} CN={right_cn:.3f} -> "
+                  f"{ms}-{me} CN_float={merged_cn_float:.3f} "
+                  f"cn={contraction['merged_cn']} "
+                  f"lf={contraction['merged_lf']} "
+                  f"rf={contraction['merged_rf']}")
+    if verbose and deletion_bridge_contractions:
+        LOGGER.info(f"  [whole_graph_as_region] contracted deletion-bridge plateaus: "
+              f"{len(deletion_bridge_contractions)} contraction(s)")
+        for contraction in deletion_bridge_contractions:
+            first = contraction['segments'][0]
+            last = contraction['segments'][-1]
+            _mch, ms, me, merged_cn_float, *_ = contraction['merged']
+            LOGGER.info(f"    merged {len(contraction['segments'])} segment(s) "
+                  f"{first[1]}-{last[2]} -> "
                   f"{ms}-{me} CN_float={merged_cn_float:.3f} "
                   f"cn={contraction['merged_cn']} "
                   f"lf={contraction['merged_lf']} "
@@ -1890,7 +2038,7 @@ def write_tst_report(graph_file, output_file, bfb_regions=None,
     for sv, _cn, _rc in svs:
         if sv.is_foldback():
             existing_fb_cuts.add((sv.chrom1, sv.bp2 if sv.strand1 == '+' else sv.bp1))
-            real_fb_spans[sv.chrom1].append((sv.bp1, sv.bp2))
+            real_fb_spans[sv.chrom1].append((sv.bp1, sv.bp2, sv.strand1))
 
     far_by_chrom = defaultdict(list)
     for entry in svs:
@@ -1932,7 +2080,7 @@ def write_tst_report(graph_file, output_file, bfb_regions=None,
                 if fc_i == fc_j:
                     p_lo, p_hi = min(fp_i, fp_j), max(fp_i, fp_j)
                     if any(abs(b1 - p_lo) <= 5 and abs(b2 - p_hi) <= 5
-                           for b1, b2 in real_fb_spans.get(fc_i, [])):
+                           for b1, b2, _strand in real_fb_spans.get(fc_i, [])):
                         continue
 
                 path = _shard_path_reachable(far_i, far_j, bp_to_seg, sv_index,
@@ -1947,9 +2095,29 @@ def write_tst_report(graph_file, output_file, bfb_regions=None,
                 if coords is None:
                     continue
                 fbi_bp1, fbi_bp2 = coords
+                local_fbi = SV(chrom, fbi_bp1, '+', chrom, fbi_bp2, '+')
 
                 cn_tst = _tst_foldback_cn(cn_i, cn_j)
                 cn_ratio = min(cn_i, cn_j) / max(cn_i, cn_j) if max(cn_i, cn_j) > 0 else 0
+
+                local_fbi_reason = None
+                local_fbi_cn_change = _foldback_flank_cn_change(local_fbi, chrom_segs)
+                if _near_duplicate_direct_foldback(local_fbi, real_fb_spans):
+                    local_fbi_reason = ("near-duplicate of direct foldback "
+                                        f"{chrom}:{local_fbi.bp1}-{local_fbi.bp2}")
+                    local_fbi = None
+                elif not _sv_in_regions(region_by_chrom, local_fbi):
+                    local_fbi_reason = "outside local region"
+                    local_fbi = None
+                elif not _foldback_passes_flank_cn_filter(
+                        local_fbi, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
+                    cn_msg = ("unknown" if local_fbi_cn_change is None
+                              else f"{local_fbi_cn_change:.3f}")
+                    local_fbi_reason = (
+                        f"flank CN change {cn_msg} < "
+                        f"{MIN_TST_FOLDBACK_FLANK_CN_CHANGE:.3f}"
+                    )
+                    local_fbi = None
 
                 # Far-side FBI (if applicable)
                 far_fbi = _tst_far_foldback_sv(far_i, far_j, fb_dist)
@@ -1962,6 +2130,23 @@ def write_tst_report(graph_file, output_file, bfb_regions=None,
                     if far_cut in existing_fb_cuts:
                         far_fbi_reason = (f"direct foldback already covers "
                                           f"{fc_i} cut {far_cut[1]}")
+                        far_fbi = None
+                    elif _near_duplicate_direct_foldback(far_fbi, real_fb_spans):
+                        far_fbi_reason = ("near-duplicate of direct foldback "
+                                          f"{fc_i}:{far_fbi.bp1}-{far_fbi.bp2}")
+                        far_fbi = None
+                    elif not _sv_in_regions(region_by_chrom, far_fbi):
+                        far_fbi_reason = "outside local region"
+                        far_fbi = None
+                    elif not _foldback_passes_flank_cn_filter(
+                            far_fbi, chrom_segs, MIN_TST_FOLDBACK_FLANK_CN_CHANGE):
+                        far_fbi_cn_change = _foldback_flank_cn_change(far_fbi, chrom_segs)
+                        cn_msg = ("unknown" if far_fbi_cn_change is None
+                                  else f"{far_fbi_cn_change:.3f}")
+                        far_fbi_reason = (
+                            f"flank CN change {cn_msg} < "
+                            f"{MIN_TST_FOLDBACK_FLANK_CN_CHANGE:.3f}"
+                        )
                         far_fbi = None
 
                 events.append({
@@ -1980,6 +2165,8 @@ def write_tst_report(graph_file, output_file, bfb_regions=None,
                     'far_lo': far_i if pos_i <= pos_j else far_j,
                     'far_hi': far_j if pos_i <= pos_j else far_i,
                     'path': path,
+                    'local_fbi': local_fbi,
+                    'local_fbi_reason': local_fbi_reason,
                     'fbi_bp1': fbi_bp1, 'fbi_bp2': fbi_bp2,
                     'far_fbi': far_fbi,
                     'far_fbi_reason': far_fbi_reason,
@@ -2048,9 +2235,15 @@ def write_tst_report(graph_file, output_file, bfb_regions=None,
                 out.write(f"\n  Shard path: concordant (0 shard hops)\n")
 
             # Injected FBIs
-            out.write(f"\n  Injected FBI (local):  "
-                      f"{ev['chrom']}:{ev['fbi_bp1']}(+) <-> "
-                      f"{ev['chrom']}:{ev['fbi_bp2']}(+)  CN={ev['cn_tst']:.2f}\n")
+            if ev['local_fbi'] is not None:
+                lfbi = ev['local_fbi']
+                out.write(f"\n  Injected FBI (local):  "
+                          f"{lfbi.chrom1}:{lfbi.bp1}({lfbi.strand1}) <-> "
+                          f"{lfbi.chrom2}:{lfbi.bp2}({lfbi.strand2})  "
+                          f"CN={ev['cn_tst']:.2f}\n")
+            else:
+                out.write(f"\n  Injected FBI (local):  none"
+                          f"  [{ev['local_fbi_reason']}]\n")
             if ev['far_fbi'] is not None:
                 ff = ev['far_fbi']
                 out.write(f"  Injected FBI (far):    "

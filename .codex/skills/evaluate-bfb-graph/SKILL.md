@@ -12,13 +12,22 @@ Use this skill to diagnose BFB evidence in AmpliconArchitect graph files in this
 Run the repository diagnostic CLI:
 
 ```bash
-python tools/diagnose_bfb_graph.py /path/to/*_graph.txt --show-tst-report --whole-graph
+timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
+  --solver gurobi \
+  --show-tst-report \
+  --whole-graph
 ```
+
+Use `--solver gurobi` by default. Avoid the default CBC solver for exploratory
+diagnostics because it can spawn long-running multi-threaded jobs on complex
+graphs. If Gurobi license checkout fails, either rerun with network access for
+the token service or use a bounded CBC run intentionally.
 
 For a suspected manual region or foldback cutoff issue:
 
 ```bash
-python tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
+timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
+  --solver gurobi \
   --region chr7:52926926-55529670 \
   --fb-cutoff 50000 \
   --fb-cutoff 100000 \
@@ -28,13 +37,18 @@ python tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
 For a no-TST control:
 
 ```bash
-python tools/diagnose_bfb_graph.py /path/to/*_graph.txt --no-tst
+timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
+  --solver gurobi \
+  --no-tst
 ```
 
 For an opposite-polarity control:
 
 ```bash
-python tools/diagnose_bfb_graph.py /path/to/*_graph.txt --reverse_polarity --whole-graph
+timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
+  --solver gurobi \
+  --reverse_polarity \
+  --whole-graph
 ```
 
 Read `docs/bfb_graph_diagnosis.md` for the full workflow and interpretation checklist.
