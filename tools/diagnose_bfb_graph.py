@@ -8,8 +8,6 @@ workflow used during BFBArchitect development.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import sys
 from pathlib import Path
 
@@ -34,7 +32,6 @@ from bfbarchitect.graph_input import (  # noqa: E402
     whole_graph_as_region,
     write_tst_report,
 )
-import bfbarchitect.graph_input as graph_input  # noqa: E402
 
 
 def _parse_region(region_text: str) -> tuple[str, int, int]:
@@ -102,24 +99,25 @@ def _print_foldback_filters(svs, chrom_segs, chrom: str | None, broad_fb_cutoff:
 
 def _run_subsection(graph_file: str, regions, fb_cutoff: int, disable_tst: bool,
                     verbose: bool, deletion: bool):
-    original = graph_input.find_tst_foldbacks
-    if disable_tst:
-        graph_input.find_tst_foldbacks = lambda svs, chrom_segs, **kwargs: svs
-    try:
-        return subsect_graph_for_region(
-            graph_file,
-            regions,
-            fb_dist_cut=fb_cutoff,
-            verbose=verbose,
-            max_segments=None,
-            deletion=deletion,
-        )
-    finally:
-        graph_input.find_tst_foldbacks = original
+    return subsect_graph_for_region(
+        graph_file,
+        regions,
+        fb_dist_cut=fb_cutoff,
+        verbose=verbose,
+        max_segments=None,
+        deletion=deletion,
+        disable_tst=disable_tst,
+    )
 
 
 def _print_region_result(
-    graph_file: str, region, data, fb_cutoff: int, solver: str, reverse_polarity: bool
+    graph_file: str,
+    region,
+    data,
+    fb_cutoff: int,
+    solver: str,
+    threads: int,
+    reverse_polarity: bool,
 ) -> None:
     print(f"\nRegion {region[0]}:{region[1]}-{region[2]}  fb_dist_cut={fb_cutoff}")
     if data is None:
@@ -160,6 +158,7 @@ def _print_region_result(
         trim_rf,
         CHR_CENTRO.get(region[0], 0),
         solver=solver,
+        threads=threads,
         silent=True,
         reverse_polarity=reverse_polarity,
     )
@@ -187,7 +186,13 @@ def _print_tst_report(graph_file: str, regions) -> None:
 
 
 def _print_whole_graph(
-    graph_file: str, solver: str, verbose: bool, deletion: bool, reverse_polarity: bool
+    graph_file: str,
+    solver: str,
+    threads: int,
+    verbose: bool,
+    deletion: bool,
+    reverse_polarity: bool,
+    disable_tst: bool,
 ) -> None:
     _print_header("Whole-graph reconstruction")
     new_segments, cn, lf, rf, svs, sv_info, chrom = whole_graph_as_region(
@@ -195,6 +200,8 @@ def _print_whole_graph(
         verbose=verbose,
         max_primary_segments=None,
         deletion=deletion,
+        disable_tst=disable_tst,
+        report_skips=True,
     )
     if not new_segments:
         print("No whole-graph region returned")
@@ -214,6 +221,7 @@ def _print_whole_graph(
         rf,
         CHR_CENTRO.get(chrom, 0),
         solver=solver,
+        threads=threads,
         silent=True,
         reverse_polarity=reverse_polarity,
     )
@@ -267,6 +275,13 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true", help="Show verbose segmentation trace")
     parser.add_argument("--solver", default="cbc", choices=["cbc", "gurobi", "mosek"])
     parser.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=8,
+        help="Number of threads for the ILP solver. Default: 8.",
+    )
+    parser.add_argument(
         "--reverse_polarity",
         action="store_true",
         help="Run the opposite of the computed BFB polarity.",
@@ -307,15 +322,14 @@ def main() -> int:
         if args.reverse_polarity:
             label += " reverse_polarity"
         _print_header(label)
-        with contextlib.redirect_stderr(io.StringIO()):
-            data = _run_subsection(
-                graph_file,
-                regions,
-                cutoff,
-                disable_tst=args.no_tst,
-                verbose=args.verbose,
-                deletion=args.deletion,
-            )
+        data = _run_subsection(
+            graph_file,
+            regions,
+            cutoff,
+            disable_tst=args.no_tst,
+            verbose=args.verbose,
+            deletion=args.deletion,
+        )
         for region, region_data in zip(regions, data):
             _print_region_result(
                 graph_file,
@@ -323,6 +337,7 @@ def main() -> int:
                 region_data,
                 cutoff,
                 args.solver,
+                args.threads,
                 args.reverse_polarity,
             )
 
@@ -330,9 +345,11 @@ def main() -> int:
         _print_whole_graph(
             graph_file,
             args.solver,
+            args.threads,
             args.verbose,
             args.deletion,
             args.reverse_polarity,
+            args.no_tst,
         )
 
     return 0

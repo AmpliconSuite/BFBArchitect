@@ -14,11 +14,12 @@ Run the repository diagnostic CLI:
 ```bash
 timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
   --solver gurobi \
+  --threads 8 \
   --show-tst-report \
   --whole-graph
 ```
 
-Use `--solver gurobi` by default. Avoid the default CBC solver for exploratory
+Use `--solver gurobi --threads 8` by default. Avoid the default CBC solver for exploratory
 diagnostics because it can spawn long-running multi-threaded jobs on complex
 graphs. If Gurobi license checkout fails, either rerun with network access for
 the token service or use a bounded CBC run intentionally.
@@ -28,6 +29,7 @@ For a suspected manual region or foldback cutoff issue:
 ```bash
 timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
   --solver gurobi \
+  --threads 8 \
   --region chr7:52926926-55529670 \
   --fb-cutoff 50000 \
   --fb-cutoff 100000 \
@@ -39,6 +41,7 @@ For a no-TST control:
 ```bash
 timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
   --solver gurobi \
+  --threads 8 \
   --no-tst
 ```
 
@@ -47,6 +50,7 @@ For an opposite-polarity control:
 ```bash
 timeout 90s python -u tools/diagnose_bfb_graph.py /path/to/*_graph.txt \
   --solver gurobi \
+  --threads 8 \
   --reverse_polarity \
   --whole-graph
 ```
