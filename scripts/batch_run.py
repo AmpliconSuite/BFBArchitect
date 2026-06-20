@@ -4,14 +4,14 @@ import argparse
 
 try:
     from bfbarchitect.datatypes import SV, chrom_sort_key, build_centromere_dict
-    from bfbarchitect.BFBArchitect import reconstruct_BFB
+    from bfbarchitect.BFBArchitect import reconstruct_bfb_from_bam
     from bfbarchitect.BFBVisualizer import visualize_BFB
 except ImportError:
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     from bfbarchitect.datatypes import SV, chrom_sort_key, build_centromere_dict
-    from bfbarchitect.BFBArchitect import reconstruct_BFB
+    from bfbarchitect.BFBArchitect import reconstruct_bfb_from_bam
     from bfbarchitect.BFBVisualizer import visualize_BFB
 
 def parse_SV(sv_str):
@@ -97,6 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--gene", help="Gene annotation", default=None)
     parser.add_argument("--centromere", help="Path to a centromere BED file (hg38 defaults used if not provided). "
                         "An example GRCh38 file is provided at resources/GRCh38_centromere.bed.", default=None)
+    parser.add_argument("-t", "--threads", type=int, default=8, help="Number of threads for the ILP solver (default: 8).")
     args = parser.parse_args()
     centromere_dict = build_centromere_dict(args.centromere)
     foldbacks = find_foldbacks(args.directory)
@@ -109,7 +110,7 @@ if __name__ == "__main__":
         chrom, start, end = cluster[0].chrom1, cluster[0].bp1, cluster[-1].bp1 if len(cluster) > 1 else cluster[0].bp2
         region_str = f"{chrom}:{start}-{end}"
         print(f"Cluster {i+1}: amplified region {region_str}")
-        reconstruct_BFB(bam_fn=args.bam,
+        reconstruct_bfb_from_bam(bam_fn=args.bam,
             cns_fn=args.cns,
             region=region_str,
             output_prefix=f'{args.output_prefix}_amplicon{i+1}',
@@ -122,6 +123,7 @@ if __name__ == "__main__":
             min_mapq=args.min_mapq,
             solver=args.solver,
             centromere_dict=centromere_dict,
+            threads=args.threads
         )
         try:
             visualize_BFB(cycle_file=f'{args.output_prefix}_amplicon{i+1}_cycles.txt',

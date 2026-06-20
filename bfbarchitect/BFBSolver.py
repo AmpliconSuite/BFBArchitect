@@ -20,7 +20,7 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
     objective = 0
     segment_cn_error = []
     left_fb_error, right_fb_error = [], []
-    w1, w2, w3 = 1, 1, segment_num/2  # weights for different error types
+    w1, w2, w3 = 1, 1, 1  # weights for different error types
     for k in range(1, segment_num+1):
         segment_cn_error.append(LpVariable(name=f'segment_error_{k}', lowBound=0))
         objective += w1 * segment_cn_error[k-1]
@@ -205,7 +205,7 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
                 cs[key1] = m.addVar(vtype=GRB.BINARY, name=f"cs_{key1}")
 
     # Objective vars and weights
-    w1, w2, w3 = 1, 1, segment_num / 2
+    w1, w2, w3 = 1, 1, 1
     segment_cn_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"segment_error_{k}") for k in range(1, segment_num + 1)]
     left_fb_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"left_fb_error_{k}") for k in range(1, segment_num + 1)]
     right_fb_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"right_fb_error_{k}") for k in range(1, segment_num + 1)]
@@ -469,7 +469,7 @@ def reconstruct_BFB_mosek(C, L, R, start, max_time=900, max_threads=8, log_file=
     # Objective Function
     # ============================================================
     
-    w1, w2, w3 = 1.0, 1.0, segment_num / 2.0
+    w1, w2, w3 = 1, 1, 1
     obj_terms = []
     
     # Main error terms

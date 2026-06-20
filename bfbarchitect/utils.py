@@ -3,8 +3,14 @@ import pandas as pd
 import pysam
 import re
 
-def create_logger(name, log_file):
+def create_logger(name, log_file=None):
     """Create a logger"""
+    if log_file is None:
+        # Create a dummy logger that does nothing
+        logger = logging.getLogger(name)
+        logger.addHandler(logging.NullHandler())
+        return logger
+    
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
     

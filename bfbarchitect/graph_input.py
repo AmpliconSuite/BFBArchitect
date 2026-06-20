@@ -163,8 +163,6 @@ def find_bfb_candidate_regions(graph_file, min_seg_size=50000, min_boundary_seg_
                 s_a, e_a, cn_a = segs[i]
                 s_b, e_b, cn_b = segs[i + 1]
                 s_c, e_c, cn_c = segs[i + 2]
-                if s_b - e_a > merge_gap or s_c - e_b > merge_gap:
-                    continue
                 ascending  = cn_b - cn_a >= min_cn_step and cn_c - cn_b >= min_cn_step
                 descending = cn_a - cn_b >= min_cn_step and cn_b - cn_c >= min_cn_step
                 if not (ascending or descending):
@@ -635,18 +633,20 @@ def whole_graph_as_region(graph_file, centromere_dict=None):
     total_length, weighted_cn_sum = 0, 0
     total_cov, total_rc = 0.0, 0
     for seg_start, seg_end, seg_cn, seg_cov, seg_rc in orig_segs:
-        seg_size = seg_end - seg_start + 1
-        total_length += seg_size
-        weighted_cn_sum += seg_cn * seg_size
-        total_cov += seg_cov * seg_size
-        total_rc += seg_rc
         if seg_end in breakpoints:
-            new_cn  = weighted_cn_sum / total_length
-            new_cov = total_cov / total_length
-            new_segments.append((chrom, start, seg_end, new_cn, new_cov, total_rc))
+            if total_length > 0:
+                new_cn  = weighted_cn_sum / total_length
+                new_cov = total_cov / total_length
+                new_segments.append((chrom, start, seg_end, new_cn, new_cov, total_rc))
             start = seg_end + 1
             total_length, weighted_cn_sum = 0, 0
             total_cov, total_rc = 0.0, 0
+        else:
+            seg_size = seg_end - seg_start + 1
+            total_length += seg_size
+            weighted_cn_sum += seg_cn * seg_size
+            total_cov += seg_cov * seg_size
+            total_rc += seg_rc
     if total_length > 0:
         new_segments.append((chrom, start, region_end,
                              weighted_cn_sum / total_length,

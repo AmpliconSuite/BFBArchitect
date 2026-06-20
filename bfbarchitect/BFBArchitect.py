@@ -35,7 +35,7 @@ def _lookup_chrom(d, chrom, label):
             "supply a matching centromere BED file via --centromere."
         ) from None
 
-def expand_amplicon_region(bam_fn, normal_cov, region, CN_threshold=2, size=100000, centromere_dict=None):
+def expand_amplicon_region(bam_fn, normal_cov, region, CN_threshold=1, size=100000, centromere_dict=None):
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
     chrom, start, end = region
@@ -64,7 +64,8 @@ def expand_amplicon_region(bam_fn, normal_cov, region, CN_threshold=2, size=1000
         right += size
     return (chrom, left, right)
 
-def segment_region(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50000, tolerance=0.1, CNV_segmentation=False, centromere_dict=None):
+def segment_region(cns_fn, bam_fn, region, SVs, normal_cov, min_cn=4, 
+                   bkp_distance=50000, CNV_segmentation=False, centromere_dict=None):
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
     # Get SV breakpoints in the BFB region and extra regions
@@ -126,11 +127,13 @@ def segment_region(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50000, 
             max_pos = max([abs(bkp) for bkp in bkps])
             p_arm = max_pos < _lookup_chrom(centromere_dict, chrom, 'centromere data')
             i = 0
-            while p_arm and boundaries[i] not in bkps:
-                i += 1
             j = len(boundaries) - 1
-            while not p_arm and boundaries[j] not in bkps:
-                j -= 1
+            if p_arm:
+                while boundaries[i] not in bkps:
+                    i += 1
+            else:
+                while boundaries[j] not in bkps:
+                    j -= 1
             boundaries = boundaries[i:j+1]
             left, right = boundaries[0], boundaries[-1]
             if p_arm and left > 0:
@@ -143,7 +146,7 @@ def segment_region(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50000, 
 
         # Merge boundaries based on genomic distance 
         i = 0
-        while i < len(boundaries) - 1:
+        while len(boundaries) > 2 and i < len(boundaries) - 1:
             curr_bd, next_bd = boundaries[i], boundaries[i+1]
             if abs(next_bd) - abs(curr_bd) < bkp_distance:
                 if curr_bd not in bkps and next_bd not in bkps:
@@ -170,10 +173,8 @@ def segment_region(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50000, 
         bkps_abs = [abs(bkp) for bkp in bkps]
         while i < len(segment_list) - 1:
             curr_cn, next_cn = cn[i], cn[i+1]
-            # max_difference = curr_cn * tolerance if (segment_list[i][2]-segment_list[i][1]) > \
-            #                 (segment_list[i+1][2]-segment_list[i+1][1]) else next_cn * tolerance
-            max_difference = next_cn // 10 + 1 if next_cn >= 5 else 0
-            if abs(curr_cn - next_cn) <= max_difference or curr_cn == 0 or next_cn == 0:
+            cn_tolerance = next_cn // 10 + 1 if next_cn >= 3 else 0
+            if abs(curr_cn - next_cn) <= cn_tolerance:
                 curr_seg, next_seg = segment_list[i], segment_list[i+1]
                 if curr_seg[2] not in bkps_abs and next_seg[1] not in bkps_abs:
                     new_seg = (curr_seg[0], curr_seg[1], next_seg[2])
@@ -185,6 +186,29 @@ def segment_region(cns_fn, bam_fn, region, SVs, normal_cov, bkp_distance=50000, 
                     continue
             i += 1
         if is_BFB_region:
+            # Remove segments with cn < min_cn and no foldback breakpoint
+            max_pos = max([abs(bkp) for bkp in bkps])
+            p_arm = max_pos < _lookup_chrom(centromere_dict, chrom, 'centromere data')
+            if p_arm:
+                j = len(segment_list) - 1
+                while j >= 0 and -segment_list[j][1] not in bkps and segment_list[j][2] not in bkps:
+                    j -= 1
+                while j < len(segment_list) - 1 and cn[j] >= min_cn:
+                    j += 1
+                if -segment_list[j][1] not in bkps and segment_list[j][2] not in bkps and cn[j] < min_cn:
+                    j -= 1
+                segment_list = segment_list[:j+1]
+                cn = cn[:j+1]
+            else:
+                i = 0
+                while i < len(segment_list) and -segment_list[i][1] not in bkps and segment_list[i][2] not in bkps:
+                    i += 1
+                while i > 0 and cn[i] >= min_cn:
+                    i -= 1
+                if -segment_list[i][1] not in bkps and segment_list[i][2] not in bkps and cn[i] < min_cn:
+                    i += 1
+                segment_list = segment_list[i:]
+                cn = cn[i:]
             segments += segment_list
         else:
             extra_segments += segment_list
@@ -222,6 +246,7 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
         Scores for each BFB string (lower is better).
     """
     scores = []
+    num_segments = len(cn0)
     for idx, BFB_string in enumerate(BFB_strings):
         logger.info('----------------------------------------')
         if not check_BFB_string(BFB_string):
@@ -230,7 +255,7 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
 
         logger.info(f'Scores for BFB string {idx+1}')
         # Calculate CN and foldback vectors for the BFB string
-        cn = [0] * len(cn0)
+        cn = [0] * num_segments
         lf = [0] * len(lf0)
         rf = [0] * len(rf0)
         for i in range(len(BFB_string) - 1):
@@ -258,7 +283,7 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
             logger.info(f'CN discrepancy: {cn_score}')
 
         # 2. Foldback Euclidean distance
-        fb_dist = sum((lf0[i] - lf[i])**2 + (rf0[i] - rf[i])**2 for i in range(len(cn0)))**0.5 / len(cn0)
+        fb_dist = sum((lf0[i] - lf[i])**2 + (rf0[i] - rf[i])**2 for i in range(num_segments))**0.5 / num_segments
         if normal_cov is not None and normal_cov < 7:
             fb_dist *= 0.3
             logger.info(f'Foldback Euclidean distance (weight = 0.3 due to low coverage): {fb_dist}')
@@ -267,7 +292,7 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
 
         # 3. Missing foldback penalty
         missing_fb_score = 0
-        for i in range(len(cn0)):
+        for i in range(num_segments):
             if lf0[i] == 0 and lf[i] != 0:
                 missing_fb_score += 0.5 * lf[i]
             if rf0[i] == 0 and rf[i] != 0:
@@ -281,12 +306,12 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
         # 4. CN divergence score (observed float CN vs expected integer CN)
         cn_divergence = 0
         if observed_cn is not None:
-            cn_divergence = sum(abs(observed_cn[i] - cn0[i]) / cn0[i]
-                               for i in range(len(cn0)) if cn0[i] > 0)
-        if len(cn0) < 2:
+            cn_divergence = sum(abs(observed_cn[i] - cn0[i]) / cn0[i] if cn0[i] > 0 
+                                else abs(observed_cn[i] - cn0[i]) for i in range(num_segments))
+        if num_segments < 2:
             cn_divergence += 2
         logger.info(f'CN divergence score: {cn_divergence}' + 
-                    (f' (add penalty of 2 for segment count < 2)' if len(cn0) < 2 else ''))
+                    (f' (add penalty of 2 for segment count < 2)' if num_segments < 2 else ''))
 
         total_score = cn_score + fb_dist + missing_fb_score + cn_divergence
         label = print_BFB_string(BFB_string, print_to_console=False)
@@ -482,7 +507,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
         exit(0)
     # Segmentation 
     print("Segmenting the amplicon region...")
-    segments, extra_segments = segment_region(cns_fn, bam_fn, region, SVs, normal_cov, tolerance=0.1, CNV_segmentation=segmentation, centromere_dict=centromere_dict)
+    segments, extra_segments = segment_region(cns_fn, bam_fn, region, SVs, normal_cov, CNV_segmentation=segmentation, centromere_dict=centromere_dict)
     # CNV calling 
     coverage_and_rc = [get_coverage_and_rc(bam_fn, segment) for segment in segments]
     cn = [max(0, round(2*c/normal_cov)-1) for (c, _) in coverage_and_rc]
@@ -557,7 +582,10 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
         all_segments = segments + extra_segments
         full_segments = []
         for i, (chrom, start, end) in enumerate(all_segments):
-            cov, rc = get_coverage_and_rc(bam_fn, (chrom, start, end))
+            if i < len(segments):
+                cov, rc = coverage_and_rc[i]
+            else:
+                cov, rc = get_coverage_and_rc(bam_fn, (chrom, start, end))
             full_segments.append((chrom, start, end, 2*cov/normal_cov, cov, rc))
         sv_info = {sv: (round(2*count/normal_cov), count) for sv, count in SVs.items()}
         write_bfb_graph(f'{output_prefix}_graph.txt', full_segments, SVs, sv_info)
@@ -659,6 +687,9 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
     logger = create_logger('BFBArchitect', log_file)
     if verbose:
         _add_stream_handler(logger)
+    logger.info(f'Command: python {Path(__file__).resolve()} --graph {graph_fn} --output_prefix {output_prefix}' +
+                 (' --multiple' if multiple else '') + (' --whole_graph' if whole_graph else '') + (f' --region {region[0]}:{region[1]}-{region[2]}' if region else '') + 
+                 (f' --solver {solver}' if solver else ''))
     start_time = time.time()
     results = reconstruct_bfb_from_graph(
         graph_fn, centromere_dict=centromere_dict, solver=solver,
@@ -696,8 +727,7 @@ def _parse_region_string(region_str):
     return (chrom, _parse_pos(start_str), _parse_pos(end_str))
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="BFBArchitect for detecting and reconstructing BFB sequences in an amplicon region.")
+    parser = argparse.ArgumentParser(description="BFBArchitect for detecting and reconstructing BFB sequences in an amplicon region.")
     parser.add_argument("--graph", help="Path to an AA-format _graph.txt file.", default=None)
     parser.add_argument("--whole_graph", help="Treat all segments as one region.", action='store_true')
     parser.add_argument("-g", "--gene", help="Gene annotation GTF file for visualization.", default=None)

@@ -24,13 +24,16 @@ def parse_segment_coordinates(file_dir, seg_num):
         for line in f:
             if line.startswith('sequence'):
                 line = line.strip().split('\t')
-                name = chr(ord('A') + cnt)
+                if cnt < 26:
+                    name = chr(ord('A') + cnt)
+                else:
+                    name = chr(ord('a') + cnt - 26)
                 cnt += 1
                 chrom =  line[1].split(':')[0]
                 start = int(line[1].split(':')[1][:-1])
                 end = int(line[2].split(':')[1][:-1])
                 cn = float(line[3])
-                segments_coordinates[name] = {'chrom':chrom, 'start':start, 'end':end,'cn':cn}
+                segments_coordinates[name] = {'chrom':chrom, 'start':start, 'end':end,'cn':round(cn)}
                 if len(segments_coordinates) == seg_num:
                     break
     return segments_coordinates
@@ -50,7 +53,11 @@ def parse_scores(file_dir, multiple = False):
                 final_score = info['Score']
                 structure = ''
                 for seg in info['Segments'].split(','):
-                    structure += chr(ord('A') + int(seg[:-1]) - 1)
+                    seg_id = int(seg[:-1])
+                    if seg_id <= 26:
+                        structure += chr(ord('A') + seg_id - 1)
+                    else:
+                        structure += chr(ord('a') + seg_id - 1 - 26)
                     seg_num = max(seg_num, abs(int(seg[:-1])))
                 scores = {'Structure':structure,'Multiplicity':info.get('Multiplicity', 1),'Final_score':final_score}
                 ans.append(scores)
