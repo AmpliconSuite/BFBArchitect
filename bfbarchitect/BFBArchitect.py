@@ -319,7 +319,7 @@ def compute_bfb_scores(cn0, lf0, rf0, BFB_strings, multiplicity, logger,
         logger.info(f'Total score: {total_score}')
         cn_div_str = f", cn_div={cn_divergence:.4f}" if observed_cn is not None else ""
         if not silent:
-            logger.info(f"  BFB {idx+1}: score={total_score:.4f}  (CN={CN_score:.4f}, fb={fb_dist:.4f}, miss_fb={missing_fb_score:.4f}{cn_div_str})  {label}")
+            logger.info(f'BFB {idx+1}: score={total_score:.4f}  (CN={cn_score:.4f}, fb={fb_dist:.4f}, miss_fb={missing_fb_score:.4f}{cn_div_str})  {label}')
         scores.append(total_score)
 
     return scores
@@ -545,7 +545,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
         exit(0)
     # Segmentation 
     logger.info("Segmenting the amplicon region...")
-    segments, extra_segments = segment_region(cns_fn, bam_fn, region, SVs, normal_cov, tolerance=0.1, CNV_segmentation=segmentation, centromere_dict=centromere_dict)
+    segments, extra_segments = segment_region(cns_fn, bam_fn, region, SVs, normal_cov, min_cn=4, CNV_segmentation=segmentation, centromere_dict=centromere_dict)
     # CNV calling 
     coverage_and_rc = [get_coverage_and_rc(bam_fn, segment) for segment in segments]
     cn = [max(0, round(2*c/normal_cov)-1) for (c, _) in coverage_and_rc]
