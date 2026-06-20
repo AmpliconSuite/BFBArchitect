@@ -1,7 +1,10 @@
 import pysam
+import logging
 from collections import defaultdict
 import re
 import argparse
+
+LOGGER = logging.getLogger('BFBArchitect')
 
 try:
     from bfbarchitect.datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
@@ -213,4 +216,5 @@ if __name__ == '__main__':
         output_file = open(output_read_fn, 'w')
         output_file.close()
     SVs = call_SVs(args.bam, region, normal_cov=normal_cov, output_fn=output_read_fn, min_cn=args.min_sv_cn, min_mapq=args.min_mapq)
-    print(f'Saved structural variants to {args.output_prefix}_reads.txt.')
+    logging.basicConfig(level=logging.INFO, format="[%(name)s:%(levelname)s]\t%(message)s")
+    LOGGER.info(f'Saved structural variants to {args.output_prefix}_reads.txt.')

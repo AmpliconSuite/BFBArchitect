@@ -1,5 +1,19 @@
 from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
+import logging
 import sys
+import time as _time
+
+LOGGER = logging.getLogger('BFBArchitect')
+
+def _build_bfb_string(consecutive_sequences):
+    """Build a flat BFB segment list from sorted (i, j, d, t) tuples."""
+    BFB_string = []
+    for (i, j, d, _) in sorted(consecutive_sequences, key=lambda x: x[3]):
+        if d == 0:
+            BFB_string += list(range(i, j + 1))
+        else:
+            BFB_string += [-x for x in range(j, i - 1, -1)]
+    return BFB_string
 
 def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
     model = LpProblem(name="BFB_reconstruction", sense=LpMinimize)
@@ -170,7 +184,8 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
         BFB_string += segment
     return BFB_string, model.objective.value()
 
-def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50, log_file=None, verbose=False):
+def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50,
+                            log_file=None, verbose=False, score_fn=None, min_lp_bound=None):
     import gurobipy as gp
     from gurobipy import GRB
     # Build model with a configured environment so Gurobi messages go to log and/or stdout as requested
@@ -193,6 +208,7 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
 
     segment_num = len(C)
     T = round(max(sum(L) + sum(R) + 1, max(C)))
+    _build_start = _time.time()
 
     # Variables
     cs = {}  # consecutive-sequence binary vars: cs[i_j_d_t]
@@ -346,8 +362,63 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
             total_sc = gp.quicksum(sc[f"{s}_{t1}_{t2}"] for t1 in range(1, t2))
             m.addConstr(cs[f"{s}_{t2}"] <= total_sc, name=f"constraint_cs_sc_{s}_{t2}")
 
+    # Pre-build cs entry list for the callback (avoids repeated key parsing during solving)
+    cs_entries = []  # list of (var, i, j, d, t)
+    for key, var in cs.items():
+        ci, cj, cd, ct = key.split('_')
+        cs_entries.append((var, int(ci), int(cj), int(cd), int(ct)))
+    cs_var_list = [e[0] for e in cs_entries]
+
+    build_elapsed = _time.time() - _build_start
+    if verbose or score_fn is not None:
+        LOGGER.info(f"  [model built]  n={segment_num}  T={T}  build_time={build_elapsed:.1f}s")
+
+    root_lp_logged = [False]
+    _terminated_early = [False]
+
+    def _callback(model, where):
+        try:
+            if where == GRB.Callback.MIPNODE and not root_lp_logged[0]:
+                if int(model.cbGet(GRB.Callback.MIPNODE_NODCNT)) == 0:
+                    if int(model.cbGet(GRB.Callback.MIPNODE_STATUS)) == 2:  # LP solved to optimality
+                        lp_bound = model.cbGet(GRB.Callback.MIPNODE_OBJBND)
+                        elapsed = model.cbGet(GRB.Callback.RUNTIME)
+                        if verbose or score_fn is not None:
+                            LOGGER.info(f"  [root LP]   t={elapsed:.1f}s  LP_bound={lp_bound:.4f}")
+                        root_lp_logged[0] = True
+                        if min_lp_bound is not None and lp_bound > min_lp_bound:
+                            if verbose or score_fn is not None:
+                                LOGGER.info(f"  [early termination: LP_bound={lp_bound:.4f} > threshold={min_lp_bound}]")
+                            model.terminate()
+                            _terminated_early[0] = True
+            elif where == GRB.Callback.MIPSOL:
+                elapsed = model.cbGet(GRB.Callback.RUNTIME)
+                obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
+                if obj > 1e15:  # skip Gurobi's pre-solution sentinel value
+                    return
+                vals = model.cbGetSolution(cs_var_list)
+                seqs = [(ci, cj, cd, ct)
+                        for (_, ci, cj, cd, ct), v in zip(cs_entries, vals) if v > 0.5]
+                bfb_str = _build_bfb_string(seqs)
+                if score_fn is not None and bfb_str:
+                    try:
+                        score = score_fn(bfb_str)
+                        LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  score={score:.4f}")
+                    except Exception as e:
+                        LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  (scoring error: {e})")
+                elif verbose:
+                    LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}")
+        except Exception as e:
+            LOGGER.warning(f"  [callback error] where={where}: {e}")
+
     # Optimize and collect solution pool
-    m.optimize()
+    if score_fn is not None or verbose or min_lp_bound is not None:
+        m.optimize(_callback)
+    else:
+        m.optimize()
+
+    if _terminated_early[0]:
+        return [], None
 
     if m.Status not in [GRB.OPTIMAL, GRB.INTERRUPTED, GRB.TIME_LIMIT]:
         # Return empty if infeasible/unbounded etc.
@@ -362,29 +433,11 @@ def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_sol
 
     # Helper to build BFB string from a solution number
     def extract_BFB_string(solution_number):
-        # Switch to specific solution in the pool
         m.Params.SolutionNumber = solution_number
-        # Collect cs vars equal to 1 in this solution
-        consecutive_sequences = []
-        for v in m.getVars():
-            if v.VarName.startswith("cs_"):
-                # Xn is the value in the nth solution of the pool
-                if v.Xn > 0.5:
-                    # Parse name cs_i_j_d_t
-                    _, payload = v.VarName.split("cs_")
-                    i, j, d, t = payload.split("_")
-                    consecutive_sequences.append((int(i), int(j), int(d), int(t)))
-        # Sort by time t
-        consecutive_sequences.sort(key=lambda x: x[3])
-        # Build BFB string
-        BFB_string = []
-        for (i, j, d, _) in consecutive_sequences:
-            if d == 0:
-                segment = list(range(i, j + 1))
-            else:
-                segment = [-x for x in range(j, i - 1, -1)]
-            BFB_string += segment
-        return BFB_string
+        seqs = [(ci, cj, cd, ct)
+                for (_, ci, cj, cd, ct) in cs_entries
+                if m.getVarByName(f"cs_{ci}_{cj}_{cd}_{ct}").Xn > 0.5]
+        return _build_bfb_string(seqs)
 
     # Collect only solutions with optimal objective value
     # PoolObjVal gives the objective of the current solution in the pool
