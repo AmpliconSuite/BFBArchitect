@@ -1,12 +1,24 @@
 from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
-import gurobipy as gp
-from gurobipy import GRB
+import logging
+import sys
+import time as _time
 
-def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
+LOGGER = logging.getLogger('BFBArchitect')
+
+def _build_bfb_string(consecutive_sequences):
+    """Build a flat BFB segment list from sorted (i, j, d, t) tuples."""
+    BFB_string = []
+    for (i, j, d, _) in sorted(consecutive_sequences, key=lambda x: x[3]):
+        if d == 0:
+            BFB_string += list(range(i, j + 1))
+        else:
+            BFB_string += [-x for x in range(j, i - 1, -1)]
+    return BFB_string
+
+def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
     model = LpProblem(name="BFB_reconstruction", sense=LpMinimize)
     
     T = round(max(sum(L) + sum(R) + 1, max(C)))
-    print('Total time points:', T)
     # Initialize binary variables for consecutive-sequences
     segment_num = len(C)
     cs = {}
@@ -22,7 +34,7 @@ def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
     objective = 0
     segment_cn_error = []
     left_fb_error, right_fb_error = [], []
-    w1, w2, w3 = 1, 1, segment_num/2  # weights for different error types
+    w1, w2, w3 = 1, 1, 1  # weights for different error types
     for k in range(1, segment_num+1):
         segment_cn_error.append(LpVariable(name=f'segment_error_{k}', lowBound=0))
         objective += w1 * segment_cn_error[k-1]
@@ -149,7 +161,7 @@ def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
             model += (cs[f'{s}_{t2}'] <= total_sc, f'constraint_cs_sc_{s}_{t2}')
     
     # Solve the problem
-    status = model.solve(PULP_CBC_CMD(timeLimit=max_time, threads=max_threads,  options=["RandomS 42"]))
+    status = model.solve(PULP_CBC_CMD(timeLimit=max_time, threads=max_threads, msg=0, options=["RandomS 42"]))
     # print(f'Objective: {model.objective.value()}')
 
     # Get consecutive-sequences added at each time point (all cs = 1)
@@ -172,9 +184,18 @@ def reconstruct_BFB_string(C, L, R, start, max_time=900, max_threads=8):
         BFB_string += segment
     return BFB_string, model.objective.value()
 
-def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50):
-    # Build model
-    m = gp.Model("BFB_reconstruction")
+def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50,
+                            log_file=None, verbose=False, score_fn=None, min_lp_bound=None):
+    import gurobipy as gp
+    from gurobipy import GRB
+    # Build model with a configured environment so Gurobi messages go to log and/or stdout as requested
+    env = gp.Env(empty=True)
+    env.setParam('OutputFlag', 1 if (log_file or verbose) else 0)
+    env.setParam('LogToConsole', 1 if verbose else 0)
+    if log_file:
+        env.setParam('LogFile', log_file)
+    env.start()
+    m = gp.Model("BFB_reconstruction", env=env)
     m.Params.TimeLimit = max_time
     m.Params.Threads = max_threads
 
@@ -187,7 +208,7 @@ def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_so
 
     segment_num = len(C)
     T = round(max(sum(L) + sum(R) + 1, max(C)))
-    print("Total time points:", T)
+    _build_start = _time.time()
 
     # Variables
     cs = {}  # consecutive-sequence binary vars: cs[i_j_d_t]
@@ -200,7 +221,7 @@ def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_so
                 cs[key1] = m.addVar(vtype=GRB.BINARY, name=f"cs_{key1}")
 
     # Objective vars and weights
-    w1, w2, w3 = 1, 1, segment_num / 2
+    w1, w2, w3 = 1, 1, 1
     segment_cn_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"segment_error_{k}") for k in range(1, segment_num + 1)]
     left_fb_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"left_fb_error_{k}") for k in range(1, segment_num + 1)]
     right_fb_error = [m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"right_fb_error_{k}") for k in range(1, segment_num + 1)]
@@ -341,8 +362,63 @@ def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_so
             total_sc = gp.quicksum(sc[f"{s}_{t1}_{t2}"] for t1 in range(1, t2))
             m.addConstr(cs[f"{s}_{t2}"] <= total_sc, name=f"constraint_cs_sc_{s}_{t2}")
 
+    # Pre-build cs entry list for the callback (avoids repeated key parsing during solving)
+    cs_entries = []  # list of (var, i, j, d, t)
+    for key, var in cs.items():
+        ci, cj, cd, ct = key.split('_')
+        cs_entries.append((var, int(ci), int(cj), int(cd), int(ct)))
+    cs_var_list = [e[0] for e in cs_entries]
+
+    build_elapsed = _time.time() - _build_start
+    if verbose or score_fn is not None:
+        LOGGER.info(f"  [model built]  n={segment_num}  T={T}  build_time={build_elapsed:.1f}s")
+
+    root_lp_logged = [False]
+    _terminated_early = [False]
+
+    def _callback(model, where):
+        try:
+            if where == GRB.Callback.MIPNODE and not root_lp_logged[0]:
+                if int(model.cbGet(GRB.Callback.MIPNODE_NODCNT)) == 0:
+                    if int(model.cbGet(GRB.Callback.MIPNODE_STATUS)) == 2:  # LP solved to optimality
+                        lp_bound = model.cbGet(GRB.Callback.MIPNODE_OBJBND)
+                        elapsed = model.cbGet(GRB.Callback.RUNTIME)
+                        if verbose or score_fn is not None:
+                            LOGGER.info(f"  [root LP]   t={elapsed:.1f}s  LP_bound={lp_bound:.4f}")
+                        root_lp_logged[0] = True
+                        if min_lp_bound is not None and lp_bound > min_lp_bound:
+                            if verbose or score_fn is not None:
+                                LOGGER.info(f"  [early termination: LP_bound={lp_bound:.4f} > threshold={min_lp_bound}]")
+                            model.terminate()
+                            _terminated_early[0] = True
+            elif where == GRB.Callback.MIPSOL:
+                elapsed = model.cbGet(GRB.Callback.RUNTIME)
+                obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
+                if obj > 1e15:  # skip Gurobi's pre-solution sentinel value
+                    return
+                vals = model.cbGetSolution(cs_var_list)
+                seqs = [(ci, cj, cd, ct)
+                        for (_, ci, cj, cd, ct), v in zip(cs_entries, vals) if v > 0.5]
+                bfb_str = _build_bfb_string(seqs)
+                if score_fn is not None and bfb_str:
+                    try:
+                        score = score_fn(bfb_str)
+                        LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  score={score:.4f}")
+                    except Exception as e:
+                        LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}  (scoring error: {e})")
+                elif verbose:
+                    LOGGER.info(f"  [incumbent] t={elapsed:.1f}s  obj={obj:.4f}")
+        except Exception as e:
+            LOGGER.warning(f"  [callback error] where={where}: {e}")
+
     # Optimize and collect solution pool
-    m.optimize()
+    if score_fn is not None or verbose or min_lp_bound is not None:
+        m.optimize(_callback)
+    else:
+        m.optimize()
+
+    if _terminated_early[0]:
+        return [], None
 
     if m.Status not in [GRB.OPTIMAL, GRB.INTERRUPTED, GRB.TIME_LIMIT]:
         # Return empty if infeasible/unbounded etc.
@@ -357,29 +433,11 @@ def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_so
 
     # Helper to build BFB string from a solution number
     def extract_BFB_string(solution_number):
-        # Switch to specific solution in the pool
         m.Params.SolutionNumber = solution_number
-        # Collect cs vars equal to 1 in this solution
-        consecutive_sequences = []
-        for v in m.getVars():
-            if v.VarName.startswith("cs_"):
-                # Xn is the value in the nth solution of the pool
-                if v.Xn > 0.5:
-                    # Parse name cs_i_j_d_t
-                    _, payload = v.VarName.split("cs_")
-                    i, j, d, t = payload.split("_")
-                    consecutive_sequences.append((int(i), int(j), int(d), int(t)))
-        # Sort by time t
-        consecutive_sequences.sort(key=lambda x: x[3])
-        # Build BFB string
-        BFB_string = []
-        for (i, j, d, _) in consecutive_sequences:
-            if d == 0:
-                segment = list(range(i, j + 1))
-            else:
-                segment = [-x for x in range(j, i - 1, -1)]
-            BFB_string += segment
-        return BFB_string
+        seqs = [(ci, cj, cd, ct)
+                for (_, ci, cj, cd, ct) in cs_entries
+                if m.getVarByName(f"cs_{ci}_{cj}_{cd}_{ct}").Xn > 0.5]
+        return _build_bfb_string(seqs)
 
     # Collect only solutions with optimal objective value
     # PoolObjVal gives the objective of the current solution in the pool
@@ -396,6 +454,266 @@ def reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=8, pool_so
                 BFB_strings.add(BFB_string)
 
     return solutions, obj_value
+
+def reconstruct_BFB_mosek(C, L, R, start, max_time=900, max_threads=8, log_file=None, verbose=False):
+    import mosek
+    from mosek.fusion import Model, Domain, Expr, ObjectiveSense
+    """
+    Reconstruct BFB using MOSEK optimization solver.
+    
+    Args:
+        C: Copy number vector
+        L: Left foldback counts
+        R: Right foldback counts  
+        start: Initial orientation (>0 for +, <=0 for -)
+        max_time: Time limit in seconds
+        max_threads: Number of threads
+        log_file: Path to log file
+        verbose: Whether to print solver output
+        
+    Returns:
+        solutions: List containing single optimal BFB string
+        obj_value: Optimal objective value
+    """
+    
+    m = Model("BFB_reconstruction")
+        
+    # Configure logging
+    if verbose:
+        m.setLogHandler(sys.stdout)
+    else:
+        m.setLogHandler(None)
+    if log_file:
+        m.setLogHandler(open(log_file, 'a'))
+        
+    
+    # Set time limit (in seconds)
+    m.setSolverParam("optimizerMaxTime", float(max_time))
+    
+    # Set number of threads
+    m.setSolverParam("numThreads", max_threads)
+    
+    segment_num = len(C)
+    T = round(max(sum(L) + sum(R) + 1, max(C)))
+    
+    # ============================================================
+    # Variables
+    # ============================================================
+    
+    # Binary variables cs[i,j,d,t]
+    cs = {}
+    for i in range(1, segment_num + 1):
+        for j in range(i, segment_num + 1):
+            for d in [0, 1]:
+                for t in range(1, T + 1):
+                    key = f"{i}_{j}_{d}_{t}"
+                    cs[key] = m.variable(f"cs_{key}", Domain.binary())
+    
+    # Continuous error variables
+    segment_cn_error = m.variable("segment_cn_error", segment_num, Domain.greaterThan(0.0))
+    left_fb_error = m.variable("left_fb_error", segment_num, Domain.greaterThan(0.0))
+    right_fb_error = m.variable("right_fb_error", segment_num, Domain.greaterThan(0.0))
+    
+    # Missing foldback binaries
+    missing_right_fb = {}
+    missing_left_fb = {}
+    
+    # ============================================================
+    # Objective Function
+    # ============================================================
+    
+    w1, w2, w3 = 1, 1, 1
+    obj_terms = []
+    
+    # Main error terms
+    obj_terms.append(Expr.mul(w1, Expr.sum(segment_cn_error)))
+    obj_terms.append(Expr.mul(w2, Expr.sum(left_fb_error)))
+    obj_terms.append(Expr.mul(w2, Expr.sum(right_fb_error)))
+    
+    # Missing foldback penalties
+    for k in range(1, segment_num + 1):
+        # Right foldback
+        right_fb_vars = [cs[f"{i}_{k}_0_{t}"] for i in range(1, k + 1) for t in range(1, T)]
+        right_fb_sum = Expr.sum(Expr.vstack(right_fb_vars)) if right_fb_vars else Expr.constTerm(0.0)
+        
+        if R[k - 1] == 0:
+            missing_right_fb[k] = m.variable(f"missing_right_fb_{k}", Domain.binary())
+            m.constraint(f"missing_right_{k}_lb", Expr.sub(missing_right_fb[k], right_fb_sum), Domain.lessThan(0.0))
+            m.constraint(f"missing_right_{k}_ub", Expr.sub(Expr.mul(T, missing_right_fb[k]), right_fb_sum), Domain.greaterThan(0.0))
+            obj_terms.append(Expr.mul(w3, missing_right_fb[k]))
+        
+        # Left foldback
+        left_fb_vars = [cs[f"{k}_{j}_1_{t}"] for j in range(k, segment_num + 1) for t in range(1, T)]
+        left_fb_sum = Expr.sum(Expr.vstack(left_fb_vars)) if left_fb_vars else Expr.constTerm(0.0)
+        
+        if L[k - 1] == 0:
+            missing_left_fb[k] = m.variable(f"missing_left_fb_{k}", Domain.binary())
+            m.constraint(f"missing_left_{k}_lb", Expr.sub(missing_left_fb[k], left_fb_sum), Domain.lessThan(0.0))
+            m.constraint(f"missing_left_{k}_ub", Expr.sub(Expr.mul(T, missing_left_fb[k]), left_fb_sum), Domain.greaterThan(0.0))
+            obj_terms.append(Expr.mul(w3, missing_left_fb[k]))
+    
+    # Set objective
+    m.objective("obj", ObjectiveSense.Minimize, Expr.add(obj_terms))
+    
+    # ============================================================
+    # Segment Discrepancy Constraints
+    # ============================================================
+    
+    for k in range(1, segment_num + 1):
+        # Segment copy number
+        seg_cn_vars = [cs[f"{i}_{j}_{d}_{t}"] 
+                        for i in range(1, k + 1) 
+                        for j in range(k, segment_num + 1)
+                        for d in [0, 1]
+                        for t in range(1, T + 1)]
+        seg_cn_sum = Expr.sum(Expr.vstack(seg_cn_vars))
+        
+        # |seg_cn_sum - C[k-1]| <= error
+        m.constraint(f"seg_cn_{k}_pos", Expr.sub(Expr.sub(seg_cn_sum, C[k-1]), segment_cn_error.index(k-1)), Domain.lessThan(0.0))
+        m.constraint(f"seg_cn_{k}_neg", Expr.add(Expr.sub(seg_cn_sum, C[k-1]), segment_cn_error.index(k-1)), Domain.greaterThan(0.0))
+        
+        # Right foldback
+        right_fb_vars = [cs[f"{i}_{k}_0_{t}"] for i in range(1, k + 1) for t in range(1, T)]
+        right_fb_sum = Expr.sum(Expr.vstack(right_fb_vars)) if right_fb_vars else Expr.constTerm(0.0)
+        
+        m.constraint(f"right_fb_{k}_pos", Expr.sub(Expr.sub(right_fb_sum, R[k-1]), right_fb_error.index(k-1)), Domain.lessThan(0.0))
+        m.constraint(f"right_fb_{k}_neg", Expr.add(Expr.sub(right_fb_sum, R[k-1]), right_fb_error.index(k-1)), Domain.greaterThan(0.0))
+        
+        # Left foldback
+        left_fb_vars = [cs[f"{k}_{j}_1_{t}"] for j in range(k, segment_num + 1) for t in range(1, T)]
+        left_fb_sum = Expr.sum(Expr.vstack(left_fb_vars)) if left_fb_vars else Expr.constTerm(0.0)
+        
+        m.constraint(f"left_fb_{k}_pos", Expr.sub(Expr.sub(left_fb_sum, L[k-1]), left_fb_error.index(k-1)), Domain.lessThan(0.0))
+        m.constraint(f"left_fb_{k}_neg", Expr.add(Expr.sub(left_fb_sum, L[k-1]), left_fb_error.index(k-1)), Domain.greaterThan(0.0))
+    
+    # ============================================================
+    # Auxiliary Variables
+    # ============================================================
+    
+    pa = {}
+    rc = {}
+    sc = {}
+    
+    keys = [f"{i}_{j}_{d}" for i in range(1, segment_num + 1) 
+            for j in range(i, segment_num + 1) for d in [0, 1]]
+    
+    for t1 in range(1, T + 1):
+        for t2 in range(t1 + 1, T + 1):
+            pa[f"{t1}_{t2}"] = m.variable(f"pa_{t1}_{t2}", Domain.binary())
+            for s in keys:
+                rc[f"{s}_{t1}_{t2}"] = m.variable(f"rc_{s}_{t1}_{t2}", Domain.binary())
+                sc[f"{s}_{t1}_{t2}"] = m.variable(f"sc_{s}_{t1}_{t2}", Domain.binary())
+    
+    # ============================================================
+    # BFB Constraints
+    # ============================================================
+    
+    # Constraint 1: Initial sequence
+    if start > 0:
+        m.constraint("initial", cs[f"1_{segment_num}_0_1"], Domain.equalsTo(1.0))
+    else:
+        m.constraint("initial", cs[f"1_{segment_num}_1_1"], Domain.equalsTo(1.0))
+    
+    # Constraint 2: Empty palindrome
+    for t in range(1, T):
+        m.constraint(f"empty_pal_{t}", pa[f"{t}_{t+1}"], Domain.equalsTo(1.0))
+    
+    # Constraint 3: Exactly one cs per time
+    for t in range(1, T + 1):
+        cs_t = [cs[f"{s}_{t}"] for s in keys]
+        m.constraint(f"one_cs_{t}", Expr.sum(Expr.vstack(cs_t)), Domain.equalsTo(1.0))
+    
+    # Constraint 4: Direction alternates
+    for t in range(1, T):
+        sum_t = Expr.sum(Expr.vstack([Expr.sub(cs[f"{i}_{j}_0_{t}"], cs[f"{i}_{j}_1_{t}"]) 
+                            for i in range(1, segment_num + 1) for j in range(i, segment_num + 1)]))
+        sum_t1 = Expr.sum(Expr.vstack([Expr.sub(cs[f"{i}_{j}_0_{t+1}"], cs[f"{i}_{j}_1_{t+1}"]) 
+                            for i in range(1, segment_num + 1) for j in range(i, segment_num + 1)]))
+        m.constraint(f"alternate_{t}", Expr.add(sum_t, sum_t1), Domain.equalsTo(0.0))
+    
+    # Constraint 5: Reverse complements
+    for t1 in range(1, T):
+        for t2 in range(t1 + 1, T + 1):
+            for s in keys:
+                parts = s.split("_")
+                s_bar = f"{parts[0]}_{parts[1]}_{'1' if parts[2] == '0' else '0'}"
+                
+                rc_var = rc[f"{s}_{t1}_{t2}"]
+                cs_t1 = cs[f"{s}_{t1+1}"]
+                cs_t2 = cs[f"{s_bar}_{t2-1}"]
+                
+                # rc = cs_t1 AND cs_t2
+                m.constraint(f"rc1_{s}_{t1}_{t2}", Expr.sub(rc_var, cs_t1), Domain.lessThan(0.0))
+                m.constraint(f"rc2_{s}_{t1}_{t2}", Expr.sub(rc_var, cs_t2), Domain.lessThan(0.0))
+                m.constraint(f"rc3_{s}_{t1}_{t2}", Expr.sub(Expr.add(cs_t1, cs_t2), Expr.add(rc_var, 1.0)), Domain.lessThan(0.0))
+    
+    # Constraint 6: Palindrome propagation
+    for t1 in range(1, T):
+        for t2 in range(t1 + 3, T + 1, 2):
+            M = Expr.sum(Expr.vstack([rc[f"{s}_{t1}_{t2}"] for s in keys]))
+            pa_curr = pa[f"{t1}_{t2}"]
+            pa_inner = pa[f"{t1+1}_{t2-1}"]
+            
+            # pa_curr = pa_inner AND M
+            m.constraint(f"pa1_{t1}_{t2}", Expr.sub(pa_curr, pa_inner), Domain.lessThan(0.0))
+            m.constraint(f"pa2_{t1}_{t2}", Expr.sub(pa_curr, M), Domain.lessThan(0.0))
+            m.constraint(f"pa3_{t1}_{t2}", Expr.sub(Expr.add(pa_inner, M), Expr.add(pa_curr, 1.0)), Domain.lessThan(0.0))
+    
+    # Constraint 7: Super consecutive
+    for t1 in range(1, T):
+        for t2 in range(t1 + 1, T + 1):
+            for s in keys:
+                i, j, d = map(int, s.split("_"))
+                
+                if d == 0:
+                    super_keys = [f"{i}_{k}_1_{t1}" for k in range(j, segment_num + 1)]
+                else:
+                    super_keys = [f"{k}_{j}_0_{t1}" for k in range(1, i + 1)]
+                
+                super_sum = Expr.sum(Expr.vstack([cs[sk] for sk in super_keys]) if super_keys else Expr.constTerm(0.0))
+                sc_var = sc[f"{s}_{t1}_{t2}"]
+                pa_var = pa[f"{t1}_{t2}"]
+                
+                # sc = super_sum AND pa
+                m.constraint(f"sc1_{s}_{t1}_{t2}", Expr.sub(sc_var, super_sum), Domain.lessThan(0.0))
+                m.constraint(f"sc2_{s}_{t1}_{t2}", Expr.sub(sc_var, pa_var), Domain.lessThan(0.0))
+                m.constraint(f"sc3_{s}_{t1}_{t2}", Expr.sub(Expr.add(super_sum, pa_var), Expr.add(sc_var, 1.0)), Domain.lessThan(0.0))
+    
+    # Constraint 8: cs must be supported by sc
+    for t2 in range(2, T + 1):
+        for s in keys:
+            sc_sum = Expr.sum(Expr.vstack([sc[f"{s}_{t1}_{t2}"] for t1 in range(1, t2)]))
+            m.constraint(f"cs_sc_{s}_{t2}", Expr.sub(cs[f"{s}_{t2}"], sc_sum), Domain.lessThan(0.0))
+    
+    # ============================================================
+    # Solve
+    # ============================================================
+    
+    m.solve()
+    obj_value = m.primalObjValue()
+    
+    # ============================================================
+    # Extract Solution
+    # ============================================================
+    
+    consecutive_sequences = []
+    for key, var in cs.items():
+        if var.level()[0] > 0.5:
+            parts = key.split("_")
+            i, j, d, t = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+            consecutive_sequences.append((i, j, d, t))
+    
+    consecutive_sequences.sort(key=lambda x: x[3])
+    
+    BFB_string = []
+    for (i, j, d, _) in consecutive_sequences:
+        if d == 0:
+            segment = list(range(i, j + 1))
+        else:
+            segment = [-x for x in range(j, i - 1, -1)]
+        BFB_string += segment
+    
+    return [BFB_string], obj_value
 
 def check_BFB_string(string):
     if len(string) == 0:
@@ -509,13 +827,13 @@ if __name__ == '__main__':
     L = [2, 0, 0, 0, 3, 0, 0, 0]
     R = [0, 0, 0, 0, 0, 1, 3, 1]
 
-    # BFB_string, obj_val = reconstruct_BFB_string(C, L, R, start, max_time=None, max_threads=12)
+    # BFB_string, obj_val = reconstruct_BFB_cbc(C, L, R, start, max_time=None, max_threads=12)
     # print('ILP objective value:', obj_val)
     # print('ILP output string', BFB_string)
     # print('BFB' if check_BFB_string(BFB_string) else 'Not BFB')
     # print_BFB_string(BFB_string)
 
-    BFB_strings, obj_val = reconstruct_BFB_strings(C, L, R, start, max_time=900, max_threads=12, pool_solutions=50)
+    BFB_strings, obj_val = reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=12, pool_solutions=50)
     print('Gurobi objective value:', obj_val)
     for idx, BFB_string in enumerate(BFB_strings):
         print(f'Gurobi output string {idx+1}:', BFB_string)

@@ -5,49 +5,123 @@ long-read sequencing (currently support Oxford Nanopore).
 
 ## Prerequisites
 - CNVkit>=0.9.10 (https://cnvkit.readthedocs.io/en/master/quickstart.html)
-- pandas>=2.3.3 (https://pandas.pydata.org/docs/whatsnew/index.html)
-- PuLP>=3.3.0 (https://coin-or.github.io/pulp/main/includeme.html)
+- pandas>=2.0.3 (https://pandas.pydata.org/docs/whatsnew/index.html)
+- PuLP>=3.0.0 (https://coin-or.github.io/pulp/main/includeme.html)
 - pysam>=0.23.3 (https://pysam.readthedocs.io/en/latest/release.html)
-- Python>=3.12.8 (https://www.python.org/downloads/release/python-3128/)
+- matplotlib>=3.7.5 (https://matplotlib.org/stable/users/installing/index.html)
+- Python>=3.8
 
 ## Installation
-BFBArchitect can be installed and run on most modern Unix-like operating systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS). It requires python>=3.8 and the above dependencies. Please follow the instructions to install (more installation options will be provided soon):
-1. Pull the source code
-    ```
-    git clone git@github.com:AmpliconSuite/BFBArchitect.git
-    cd /path/to/BFBArchitect
-    ```
-2. Create a virtual environment (optional)
-    ```
-    python3 -m venv BFBArchitect_venv
-    source BFBArchitect_venv/bin/activate
-    ```
-3. Install dependencies locally
-    ```
-    pip install .
-    ```
+BFBArchitect can be installed and run on most modern Unix-like operating systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS). It requires python>=3.8 and the above dependencies.
+
+### Install from a local GitHub clone
+
+Until BFBArchitect is available on PyPI, install it directly from a local clone:
+```
+git clone git@github.com:AmpliconSuite/BFBArchitect.git
+cd BFBArchitect
+```
+
+If you can use conda, this is the recommended route:
+```bash
+conda env create -f environment.yml
+conda activate bfbarchitect
+pip install -e . --no-deps
+```
+
+The `--no-deps` flag is intentional: it installs BFBArchitect from the local checkout and does not ask pip to resolve BFBArchitect dependencies from PyPI. The conda environment supplies the runtime dependencies.
+
+If you cannot use PyPI at all, install the dependencies through conda, system packages, or locally downloaded wheels first, then install BFBArchitect with:
+```bash
+pip install -e . --no-deps
+```
+
+If you prefer a Python virtual environment and your machine can reach a package index for dependencies:
+```bash
+python3 -m venv BFBArchitect_venv
+source BFBArchitect_venv/bin/activate
+pip install -e .
+```
+
+For a non-editable local install from the clone:
+```bash
+pip install . --no-deps
+```
+
+After installation, the BFBArchitect commands are available from any directory:
+```bash
+BFBArchitect.py --help
+BFBArchitect-call-cnv --help
+BFBArchitect-batch --help
+```
+
+### Gurobi license (recommended for efficient ILP solving)
+Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when the license file exists. If Gurobi is not licensed but MOSEK is already installed and licensed, BFBArchitect falls back to MOSEK. Otherwise it uses the open-source CBC solver (slower, no solution pool). The solver can also be set explicitly via `--solver gurobi|mosek|cbc`.
+   
 
 ## Running
 Before running BFBArchitect, genome-wide copy number (CN) calls must be generated from the aligned long-read data by running the follow script:
 ```
-/path/to/BFBArchitect/scripts/call_cnvs.sh <input.bam> /path/to/BFBArchitect/scripts/hg38full_ref_5k.cnn <output_dir>
+BFBArchitect-call-cnv <input.bam> <output_dir> <threads>
 ```
+This command uses the packaged hg38 CNVkit reference by default. To use a different reference, pass `--reference-cnn <reference.cnn>`.
 This will create a file called ```[input].cns```, which is a required argument in BFBArchitect. 
 
 Then run BFBArchitect to reconstruct potential BFB sequences for any genomic region ```chrom:start-end``` with copy number amplification. (The amplicon region can be detected by standard pipelines like [CoRAL](https://github.com/AmpliconSuite/CoRAL).)
 ### Usage
 ```
-python /path/to/BFBArchitect.py --bam <input.bam> --cns <input.cns> --regions <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--deletion] [--coverage <sequencing coverage>]
+python /path/to/BFBArchitect/bfbarchitect/BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
 ```
-### Required arguments
+BFBArchitect supports reconstructing BFB sequences at the whole-genome level, given CoRAL results at ```CoRAL_output_directory```: 
+```
+BFBArchitect-batch --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
+```
+BFBArchitect also supports reconstructing BFB sequences directly from an [AmpliconArchitect](https://github.com/AmpliconSuite/AmpliconArchitect) (or BFBArchitect) `_graph.txt` file, with no BAM or CNS file required. Three modes are supported:
+```
+# Auto-detect BFB candidate regions (default) — one output set per region
+BFBArchitect.py --graph <AA_graph.txt> --output_prefix <dir/output_prefix>
+
+# Process a specific region only — single output at <output_prefix>_BFB_*
+BFBArchitect.py --graph <AA_graph.txt> --region chr7:120000000-125000000 --output_prefix <dir/output_prefix>
+
+# Treat all segments as one region — single output at <output_prefix>_BFB_*
+BFBArchitect.py --graph <AA_graph.txt> --whole_graph --output_prefix <dir/output_prefix>
+
+# Disable deletion handling, if needed for a control run
+BFBArchitect.py --graph <AA_graph.txt> --no-deletion --output_prefix <dir/output_prefix>
+
+# Run the opposite of the computed BFB polarity
+BFBArchitect.py --graph <AA_graph.txt> --reverse_polarity --output_prefix <dir/output_prefix>
+```
+`--region` and `--whole_graph` are mutually exclusive.
+
+### Required arguments (BAM mode)
 - --bam <.bam file>: Aligned long reads
 - --cns <.cns file>: The .cns file from genome-wide copy number calling
-- --regions <string>: A string that represents the amplified genomic region (e.g. chr1:1-1000000)
+- --region <string>: A string that represents the amplified genomic region (e.g. chr1:1-1000000)
 - --output_prefix <string>: The directory and prefix for all output files
-### Optional arguments
-- --segmentation: Consider copy number variation when segmenting the amplicon region. 
-- --deletion: Handle deletion when reconstructing BFB sequences. 
+
+### Required arguments (graph mode)
+- --graph <_graph.txt file>: An AA-format breakpoint graph file
+- --output_prefix <string>: The directory and prefix for all output files
+
+### Optional arguments (BAM mode)
+- --segmentation: Consider copy number variation when segmenting the amplicon region.
 - --coverage <integer>: Sequencing coverage (if provided, estimating coverage from cns will be skipped)
+
+### Optional arguments (deletion handling)
+- --no-deletion: Disable deletion handling. Deletion handling is enabled by default in both BAM and graph modes. In BAM mode, deletion-support evidence is added back into affected segment copy-number estimates. In graph mode, same-chromosome deletion-edge CN is added back to sequence segments skipped by those deletion edges before constructing the BFB CN vector.
+- --deletion: Enable deletion handling explicitly. This is the default and is retained for compatibility with older commands.
+
+### Optional arguments (both modes)
+- --multiple: Reconstruct multiple optimal BFB candidate sequences (requires Gurobi)
+- --solver gurobi|mosek|cbc: ILP solver to use (default: autodetect)
+- -t / --threads <int>: Number of threads for the ILP solver (default: 8)
+- --region <string>: (graph mode) process a specific region only, bypassing auto-detection (e.g. chr7:120000000-125000000). Mutually exclusive with --whole_graph.
+- --whole_graph: (graph mode only) treat all segments as a single region instead of auto-detecting BFB regions
+- --max-graph-segments <int>: (graph mode only) maximum number of graph segments allowed per graph-mode region (default: 100; use 0 to disable)
+- -g / --gene <gtf_file>: Gene annotation for visualization (graph mode only)
+- --centromere <.bed file>: Path to a BED file of centromere regions (≥3 tab-separated columns: chrom, start, end). Multiple rows per chromosome are merged to a single midpoint. Falls back to built-in hg38 defaults if omitted. Example centromere BED files are packaged with BFBArchitect under `bfbarchitect.resources`.
 
 ### Output
 - graph.txt: A text file describing the segment and structural variant information of a breakpoint graph constructed from the amplicon region. 
@@ -58,7 +132,7 @@ python /path/to/BFBArchitect.py --bam <input.bam> --cns <input.cns> --regions <c
 Please download the sample input from this [link](https://drive.google.com/file/d/1OVAKD8kiH3vK9e2hE6YecMIoAulS_oId/view?usp=sharing), 
 which includes sample.sorted.bam, sample.sorted.cns, and sample.sorted.cnr (for visualization). Run the following command:
 ```
-python /path/to/BFBArchitect/src/BFBArchitect.py --bam BFBArchitect_input/sample.sorted.bam --cns BFBArchitect_input/sample.sorted.cns --regions chr7:120000000-125000000 --output_prefix sample --coverage 15.0
+python /path/to/BFBArchitect/bfbarchitect/BFBArchitect.py --bam BFBArchitect_input/sample.sorted.bam --cns BFBArchitect_input/sample.sorted.cns --region chr7:120000000-125000000 --output_prefix sample --coverage 15.0
 ```
 The following files will be output:
 1. [sample_graph.txt](https://github.com/AmpliconSuite/BFBArchitect/blob/main/sample/sample_graph.txt)
@@ -101,9 +175,89 @@ The following files will be output:
 
 After reconstructing BFB sequences, visualization can be generated by running the following command:
 ```
-python ~/BFBArchitect/src/BFBVisualizer.py --graph sample_graph.txt --cycle sample_cycles.txt --cnr BFBArchitect_input/sample.sorted.cnr --output_prefix sample
+python ~/BFBArchitect/bfbarchitect/BFBVisualizer.py --graph sample_graph.txt --cycle sample_cycles.txt --cnr BFBArchitect_input/sample.sorted.cnr --output_prefix sample
 ```
 ![Visualization generated by BFBArchitect](https://github.com/AmpliconSuite/BFBArchitect/blob/main/sample/sample_1.png)
+
+## Library usage
+
+BFBArchitect can be imported directly to reconstruct BFB sequences from Python without invoking the CLI.
+
+### From a graph file
+
+```python
+from bfbarchitect import reconstruct_bfb_from_graph, write_bfb_graph, write_bfb_cycles, visualize_BFB
+from bfbarchitect import build_centromere_dict
+
+# hg38 defaults; supply a BED file for another assembly:
+#   centromere_dict = build_centromere_dict('/path/to/centromere.bed')
+centromere_dict = build_centromere_dict()
+
+results = reconstruct_bfb_from_graph(
+    'path/to/sample_graph.txt',
+    centromere_dict=centromere_dict,
+    deletion=True,  # Optional; default is True. Set False for a no-deletion control.
+    threads=8,    # Optional: number of ILP solver threads (default: 8)
+    reverse_polarity=False,  # Optional: run the opposite computed polarity.
+    silent=True   # Optional: suppress terminal output/logs
+)
+# results is a list of dicts, one per detected BFB region
+
+for r in results:
+    chrom, start, end = r['region']
+    prefix = f'{chrom}_{start}'
+    print(f"Region {chrom}:{start}-{end}")
+    
+    # Optionally write output files and visualize:
+    write_bfb_graph(f'{prefix}_graph.txt', r['new_segments'], r['svs'], r['sv_info'])
+    write_bfb_cycles(f'{prefix}_cycles.txt', r['new_segments'],
+                     r['bfb_strings'], r['scores'], r['multiplicity'])
+    
+    # Generate the visualization PDF/PNG
+    visualize_BFB(
+        cycle_file=f"{prefix}_cycles.txt",
+        graph_file=f"{prefix}_graph.txt",
+        cnr_file=None,  # or path to .cnr for scatter plot
+        output_prefix=f"{prefix}_BFB"
+    )
+```
+
+Each result dict contains:
+| Key | Type | Description |
+|---|---|---|
+| `region` | `(chrom, start, end)` | Detected BFB candidate region coordinates |
+| `new_segments` | `list[(chrom, start, end, cn_float, coverage, read_count)]` | Segmented amplicon |
+| `bfb_strings` | `list[list[int]]` | Reconstructed BFB paths (segment indices) |
+| `scores` | `list[float]` | Per-candidate score (lower is better) |
+| `multiplicity` | `int` | ILP multiplicity factor |
+| `reverse_polarity` | `bool` | Whether the opposite computed polarity was used |
+| `svs` | `list[SV]` | Discordant SVs in the region |
+| `sv_info` | `dict[SV, (float, int)]` | Per-SV predicted CN and read count |
+
+### From pre-segmented data
+
+```python
+from bfbarchitect import reconstruct_bfb, write_bfb_graph, write_bfb_cycles, visualize_BFB
+from bfbarchitect import build_centromere_dict
+
+centromere_dict = build_centromere_dict()
+
+# new_segments: list of (chrom, start, end, cn_float, coverage, read_count)
+# cn, lf, rf:   per-segment integer vectors aligned to new_segments
+chrom = new_segments[0][0]
+BFB_strings, scores, multiplicity = reconstruct_bfb(
+    new_segments, cn, lf, rf,
+    centromere_dict.get(chrom, 0),
+    threads=8,  # Optional: number of ILP solver threads (default: 8)
+    reverse_polarity=True,  # Optional: run the opposite computed polarity
+)
+
+# Optionally write output files and visualize:
+prefix = "my_sample"
+write_bfb_graph(prefix + '_graph.txt', new_segments, SVs, sv_info)
+write_bfb_cycles(prefix + '_cycles.txt', new_segments, BFB_strings, scores, multiplicity)
+visualize_BFB(prefix + '_cycles.txt', prefix + '_graph.txt', None, prefix)
+```
 
 ## Contact
 BFBArchitect is developed and maintained by Bafna Lab at UC San Diego. Please raise an issue or reach out to chl221@ucsd.edu if you have any questions. 
