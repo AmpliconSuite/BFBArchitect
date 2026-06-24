@@ -1,3 +1,4 @@
+from bfbarchitect._version import __version__
 from bfbarchitect.BFBArchitect import (
     reconstruct_bfb,
     reconstruct_bfb_from_graph,

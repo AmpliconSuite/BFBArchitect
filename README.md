@@ -5,48 +5,66 @@ long-read sequencing (currently support Oxford Nanopore).
 
 ## Prerequisites
 - CNVkit>=0.9.10 (https://cnvkit.readthedocs.io/en/master/quickstart.html)
-- pandas>=2.3.3 (https://pandas.pydata.org/docs/whatsnew/index.html)
-- PuLP>=3.3.0 (https://coin-or.github.io/pulp/main/includeme.html)
+- pandas>=2.0.3 (https://pandas.pydata.org/docs/whatsnew/index.html)
+- PuLP>=3.0.0 (https://coin-or.github.io/pulp/main/includeme.html)
 - pysam>=0.23.3 (https://pysam.readthedocs.io/en/latest/release.html)
-- Python>=3.12.8 (https://www.python.org/downloads/release/python-3128/)
+- matplotlib>=3.7.5 (https://matplotlib.org/stable/users/installing/index.html)
+- Python>=3.8
 
 ## Installation
 BFBArchitect can be installed and run on most modern Unix-like operating systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS). It requires python>=3.8 and the above dependencies.
 
-First, pull the source code:
+### Install from a local GitHub clone
+
+Until BFBArchitect is available on PyPI, install it directly from a local clone:
 ```
 git clone git@github.com:AmpliconSuite/BFBArchitect.git
-cd /path/to/BFBArchitect
+cd BFBArchitect
 ```
 
-### Option A: conda (recommended)
+If you can use conda, this is the recommended route:
 ```bash
 conda env create -f environment.yml
 conda activate bfbarchitect
-pip install -e . --no-deps    # -e (editable) makes changes take effect without reinstalling
+pip install -e . --no-deps
 ```
 
-### Option B: pip + virtual environment
+The `--no-deps` flag is intentional: it installs BFBArchitect from the local checkout and does not ask pip to resolve BFBArchitect dependencies from PyPI. The conda environment supplies the runtime dependencies.
+
+If you cannot use PyPI at all, install the dependencies through conda, system packages, or locally downloaded wheels first, then install BFBArchitect with:
+```bash
+pip install -e . --no-deps
+```
+
+If you prefer a Python virtual environment and your machine can reach a package index for dependencies:
 ```bash
 python3 -m venv BFBArchitect_venv
 source BFBArchitect_venv/bin/activate
 pip install -e .
 ```
 
-After installation, `BFBArchitect.py` is available as a system-wide command. You can call it from any directory:
+For a non-editable local install from the clone:
+```bash
+pip install . --no-deps
+```
+
+After installation, the BFBArchitect commands are available from any directory:
 ```bash
 BFBArchitect.py --help
+BFBArchitect-call-cnv --help
+BFBArchitect-batch --help
 ```
 
 ### Gurobi license (recommended for efficient ILP solving)
-Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. BFBArchitect autodetects the available solver: Gurobi is used when the license file exists and `gurobipy` is installed; otherwise it falls back to the open-source CBC solver (slower, no solution pool). The solver can also be set explicitly via `--solver gurobi|cbc`.
+Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when the license file exists. If Gurobi is not licensed but MOSEK is already installed and licensed, BFBArchitect falls back to MOSEK. Otherwise it uses the open-source CBC solver (slower, no solution pool). The solver can also be set explicitly via `--solver gurobi|mosek|cbc`.
    
 
 ## Running
 Before running BFBArchitect, genome-wide copy number (CN) calls must be generated from the aligned long-read data by running the follow script:
 ```
-python /path/to/BFBArchitect/scripts/call_CNV.py <input.bam> /path/to/BFBArchitect/scripts/hg38full_ref_5k.cnn <output_dir> <threads>
+BFBArchitect-call-cnv <input.bam> <output_dir> <threads>
 ```
+This command uses the packaged hg38 CNVkit reference by default. To use a different reference, pass `--reference-cnn <reference.cnn>`.
 This will create a file called ```[input].cns```, which is a required argument in BFBArchitect. 
 
 Then run BFBArchitect to reconstruct potential BFB sequences for any genomic region ```chrom:start-end``` with copy number amplification. (The amplicon region can be detected by standard pipelines like [CoRAL](https://github.com/AmpliconSuite/CoRAL).)
@@ -56,7 +74,7 @@ python /path/to/BFBArchitect/bfbarchitect/BFBArchitect.py --bam <input.bam> --cn
 ```
 BFBArchitect supports reconstructing BFB sequences at the whole-genome level, given CoRAL results at ```CoRAL_output_directory```: 
 ```
-python /path/to/BFBArchitect/scripts/batch_run.py --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
+BFBArchitect-batch --directory <CoRAL_output_directory> --bam <input.bam> --cns <input.cns> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
 ```
 BFBArchitect also supports reconstructing BFB sequences directly from an [AmpliconArchitect](https://github.com/AmpliconSuite/AmpliconArchitect) (or BFBArchitect) `_graph.txt` file, with no BAM or CNS file required. Three modes are supported:
 ```
@@ -97,13 +115,13 @@ BFBArchitect.py --graph <AA_graph.txt> --reverse_polarity --output_prefix <dir/o
 
 ### Optional arguments (both modes)
 - --multiple: Reconstruct multiple optimal BFB candidate sequences (requires Gurobi)
-- --solver gurobi|cbc: ILP solver to use (default: autodetect)
+- --solver gurobi|mosek|cbc: ILP solver to use (default: autodetect)
 - -t / --threads <int>: Number of threads for the ILP solver (default: 8)
 - --region <string>: (graph mode) process a specific region only, bypassing auto-detection (e.g. chr7:120000000-125000000). Mutually exclusive with --whole_graph.
 - --whole_graph: (graph mode only) treat all segments as a single region instead of auto-detecting BFB regions
 - --max-graph-segments <int>: (graph mode only) maximum number of graph segments allowed per graph-mode region (default: 100; use 0 to disable)
 - -g / --gene <gtf_file>: Gene annotation for visualization (graph mode only)
-- --centromere <.bed file>: Path to a BED file of centromere regions (≥3 tab-separated columns: chrom, start, end). Multiple rows per chromosome are merged to a single midpoint. Falls back to built-in hg38 defaults if omitted. An example GRCh38 file is provided at `resources/GRCh38_centromere.bed`.
+- --centromere <.bed file>: Path to a BED file of centromere regions (≥3 tab-separated columns: chrom, start, end). Multiple rows per chromosome are merged to a single midpoint. Falls back to built-in hg38 defaults if omitted. Example centromere BED files are packaged with BFBArchitect under `bfbarchitect.resources`.
 
 ### Output
 - graph.txt: A text file describing the segment and structural variant information of a breakpoint graph constructed from the amplicon region. 

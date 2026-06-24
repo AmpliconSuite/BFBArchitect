@@ -1,37 +1,64 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "BFBArchitect"
-version = "0.1.1"
+dynamic = ["version"]
 description = "A tool for detecting and reconstructing breakage-fusion-bridge (BFB) cycles using long reads"
 readme = "README.md"
 requires-python = ">=3.8"
 authors = [
     {name = "Chaohui Li", email = "chl221@ucsd.edu"}
 ]
-license = {text = "BSD 3-Clause"}
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+keywords = ["bioinformatics", "genomics", "structural-variation", "BFB", "long-reads"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 
 dependencies = [
-    "pandas>=2.3.3",
+    "pandas>=2.0.3",
     "pysam>=0.23.3",
-    "matplotlib>=3.10.7",
-    "PuLP>=3.3.0",
+    "matplotlib>=3.7.5",
+    "PuLP>=3.0.0",
     "CNVkit>=0.9.10",
     "gurobipy",
 ]
 
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
 [project.urls]
 Homepage = "https://github.com/AmpliconSuite/BFBArchitect"
 Repository = "https://github.com/AmpliconSuite/BFBArchitect"
+Issues = "https://github.com/AmpliconSuite/BFBArchitect/issues"
 
 [project.scripts]
 "BFBArchitect.py" = "bfbarchitect.BFBArchitect:main"
+"BFBArchitect-call-cnv" = "bfbarchitect.call_cnv:main"
+"BFBArchitect-batch" = "bfbarchitect.batch_run:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bfbarchitect*"]
 
+[tool.setuptools.dynamic]
+version = {attr = "bfbarchitect._version.__version__"}
+
 [tool.setuptools.package-data]
 "*" = ["*.txt", "*.md", "*.json"]  # Include data files if needed
+"bfbarchitect.resources" = ["*.cnn", "*.bed"]

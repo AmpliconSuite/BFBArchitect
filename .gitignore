@@ -7,7 +7,6 @@ build/
 _tests/
 CLAUDE.md
 GEMINI.md
-environment.yml
 .idea/
 __pycache__/
 diagnostics/

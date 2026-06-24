@@ -8,11 +8,13 @@ from collections import defaultdict
 from pathlib import Path
 
 try:
+    from bfbarchitect._version import __version__
     from bfbarchitect.SVCaller import call_SVs
     from bfbarchitect.BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
     from bfbarchitect.datatypes import CHR_CENTRO, build_centromere_dict
     from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
 except:
+    from _version import __version__
     from SVCaller import call_SVs
     from BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
     from datatypes import CHR_CENTRO, build_centromere_dict
@@ -807,6 +809,7 @@ def _parse_region_string(region_str):
 
 def main():
     parser = argparse.ArgumentParser(description="BFBArchitect for detecting and reconstructing BFB sequences in an amplicon region.")
+    parser.add_argument("--version", action="version", version=f"BFBArchitect {__version__}")
     parser.add_argument("--graph", help="Path to an AA-format _graph.txt file.", default=None)
     parser.add_argument("--whole_graph", help="Treat all segments as one region.", action='store_true')
     parser.add_argument("-g", "--gene", help="Gene annotation GTF file for visualization.", default=None)
@@ -828,7 +831,7 @@ def main():
     parser.add_argument("--output_prefix", help="Prefix of output files.", required=True)
     parser.add_argument("--multiple", help="Reconstruct multiple BFB candidates", action='store_true')
     parser.add_argument("--reverse_polarity", help="Run the opposite of the computed BFB polarity.", action='store_true')
-    parser.add_argument("--solver", help="ILP solver to use. Options: gurobi (defualt), mosek, and cbc", default=None)
+    parser.add_argument("--solver", help="ILP solver to use. Options: gurobi, mosek, and cbc (default: autodetect).", default=None)
     parser.add_argument("-t", "--threads", type=int, default=8, help="Number of threads for the ILP solver (default: 8).")
     parser.add_argument("--centromere", help="Path to a BED file of centromere regions.", default=None)
     parser.add_argument("--verbose", help="Print all log messages to stdout in addition to the log file.", action='store_true')
