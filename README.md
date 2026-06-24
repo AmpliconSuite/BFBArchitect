@@ -3,26 +3,30 @@
 BFBArchitect is a tool for detecting and reconstructing breakage-fusion-bridge (BFB) cycles from
 long-read sequencing (currently support Oxford Nanopore). 
 
-## Prerequisites
-- CNVkit>=0.9.10 (https://cnvkit.readthedocs.io/en/master/quickstart.html)
-- pandas>=2.0.3 (https://pandas.pydata.org/docs/whatsnew/index.html)
-- PuLP>=3.0.0 (https://coin-or.github.io/pulp/main/includeme.html)
-- pysam>=0.23.3 (https://pysam.readthedocs.io/en/latest/release.html)
-- matplotlib>=3.7.5 (https://matplotlib.org/stable/users/installing/index.html)
-- Python>=3.8
+## Dependencies
+
+BFBArchitect requires Python>=3.8. Runtime dependencies are installed during the conda or pip installation process and include CNVkit, pandas, PuLP, pysam, matplotlib, and gurobipy.
 
 ## Installation
-BFBArchitect can be installed and run on most modern Unix-like operating systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS). It requires python>=3.8 and the above dependencies.
+BFBArchitect can be installed and run on most modern Unix-like operating systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS).
+
+### Install from PyPI
+
+```bash
+python3 -m venv BFBArchitect_venv
+source BFBArchitect_venv/bin/activate
+pip install BFBArchitect
+```
 
 ### Install from a local GitHub clone
 
-Until BFBArchitect is available on PyPI, install it directly from a local clone:
+For development, or for systems that cannot install BFBArchitect from PyPI, install it directly from a local clone:
 ```
 git clone git@github.com:AmpliconSuite/BFBArchitect.git
 cd BFBArchitect
 ```
 
-If you can use conda, this is the recommended route:
+If you can use conda, this is the recommended source-install route:
 ```bash
 conda env create -f environment.yml
 conda activate bfbarchitect
@@ -70,7 +74,7 @@ This will create a file called ```[input].cns```, which is a required argument i
 Then run BFBArchitect to reconstruct potential BFB sequences for any genomic region ```chrom:start-end``` with copy number amplification. (The amplicon region can be detected by standard pipelines like [CoRAL](https://github.com/AmpliconSuite/CoRAL).)
 ### Usage
 ```
-python /path/to/BFBArchitect/bfbarchitect/BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
+BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]
 ```
 BFBArchitect supports reconstructing BFB sequences at the whole-genome level, given CoRAL results at ```CoRAL_output_directory```: 
 ```
@@ -132,7 +136,7 @@ BFBArchitect.py --graph <AA_graph.txt> --reverse_polarity --output_prefix <dir/o
 Please download the sample input from this [link](https://drive.google.com/file/d/1OVAKD8kiH3vK9e2hE6YecMIoAulS_oId/view?usp=sharing), 
 which includes sample.sorted.bam, sample.sorted.cns, and sample.sorted.cnr (for visualization). Run the following command:
 ```
-python /path/to/BFBArchitect/bfbarchitect/BFBArchitect.py --bam BFBArchitect_input/sample.sorted.bam --cns BFBArchitect_input/sample.sorted.cns --region chr7:120000000-125000000 --output_prefix sample --coverage 15.0
+BFBArchitect.py --bam BFBArchitect_input/sample.sorted.bam --cns BFBArchitect_input/sample.sorted.cns --region chr7:120000000-125000000 --output_prefix sample --coverage 15.0
 ```
 The following files will be output:
 1. [sample_graph.txt](https://github.com/AmpliconSuite/BFBArchitect/blob/main/sample/sample_graph.txt)
