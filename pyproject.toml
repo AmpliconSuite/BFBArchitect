@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "twine"]
+dev = ["build", "pytest", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/AmpliconSuite/BFBArchitect"

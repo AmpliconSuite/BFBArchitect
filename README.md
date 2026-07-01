@@ -47,6 +47,12 @@ source BFBArchitect_venv/bin/activate
 pip install -e .
 ```
 
+Developers who plan to run tests should install the editable development extra instead:
+```bash
+pip install -e ".[dev]"
+python -m pytest
+```
+
 For a non-editable local install from the clone:
 ```bash
 pip install . --no-deps
