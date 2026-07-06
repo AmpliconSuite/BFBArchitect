@@ -17,6 +17,10 @@ Environment overrides:
   LIMIT              Number of top inventory cases to benchmark, or "all" (default: 20)
   MIN_T              Minimum inferred T value to include (default: 0)
   MAX_ACTIVE_THREADS Maximum concurrent declared solver threads (default: 16)
+  INCLUDE_CASE_ID_FILE
+                      Optional file with one additional case_id per line.
+  SEED_FROM_DIR       Optional prior output directory. Missing replicate TSVs
+                      are copied from this directory before --resume runs.
 EOF
 }
 
@@ -39,6 +43,8 @@ TIMEOUT="${TIMEOUT:-900}"
 LIMIT="${LIMIT:-20}"
 MIN_T="${MIN_T:-0}"
 MAX_ACTIVE_THREADS="${MAX_ACTIVE_THREADS:-16}"
+INCLUDE_CASE_ID_FILE="${INCLUDE_CASE_ID_FILE:-}"
+SEED_FROM_DIR="${SEED_FROM_DIR:-}"
 
 mkdir -p "$OUT_DIR"
 
@@ -52,7 +58,15 @@ if [[ "$LIMIT" == "all" ]]; then
     LIMIT_ARGS=(--all-cases)
 fi
 
+INCLUDE_ARGS=()
+if [[ -n "$INCLUDE_CASE_ID_FILE" ]]; then
+    INCLUDE_ARGS=(--include-case-id-file "$INCLUDE_CASE_ID_FILE")
+fi
+
 for rep in "${REPLICATE_VALUES[@]}"; do
+    if [[ -n "$SEED_FROM_DIR" && ! -e "$OUT_DIR/thread_matrix_replicate${rep}.tsv" ]]; then
+        cp "$SEED_FROM_DIR/thread_matrix_replicate${rep}.tsv" "$OUT_DIR/thread_matrix_replicate${rep}.tsv"
+    fi
     "$PYTHON_BIN" scripts/solver_runtime_analysis.py \
         "${GRAPH_ARGS[@]}" \
         --out-dir "$OUT_DIR" \
@@ -61,6 +75,7 @@ for rep in "${REPLICATE_VALUES[@]}"; do
         --timeout "$TIMEOUT" \
         "${LIMIT_ARGS[@]}" \
         --min-t "$MIN_T" \
+        "${INCLUDE_ARGS[@]}" \
         --max-active-threads "$MAX_ACTIVE_THREADS" \
         --resume
 done

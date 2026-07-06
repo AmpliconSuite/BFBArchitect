@@ -237,6 +237,37 @@ Use `--include-case-id <case_id>` for one-off additions. Use `--case-id`
 instead only when you want to restrict the benchmark to a specific case or set
 of cases.
 
+## Sampling Strategy For Future Runs
+
+The top-`N` complexity strategy is useful for stressing long solver runtimes,
+but it is not sufficient by itself for score-stability analysis. Future expanded
+runs should use a stratified selection:
+
+- hard cases: top 50 or more cases by inferred ILP size
+- easy cases: 25-50 low-complexity cases, sampled from the lower end of the
+  inventory, but not no-op cases. Require enough structure to exercise
+  BFBArchitect, for example at least 3 segments and nonzero foldback signal.
+- cutoff-near cases: any cases with prior BFBArchitect scores near the BFB
+  cutoff, currently score <= 2.8
+- disagreement cases: any cases where solver or thread choice changes whether
+  the score is above or below 2.8
+
+This keeps runtime conclusions anchored on difficult examples while also testing
+whether solver/thread choices perturb classification for routine cases.
+
+If reusing a completed hard-case run, seed the new output directory with the
+existing replicate TSVs by setting `SEED_FROM_DIR`, and pass extra cases through
+`INCLUDE_CASE_ID_FILE`. The runner uses `--resume`, so completed
+`(source, case, solver, threads)` rows are skipped and only the additional cases
+run.
+
+```bash
+SEED_FROM_DIR=reports/solver_runtime_thread_matrix_expanded_50 \
+INCLUDE_CASE_ID_FILE=reports/solver_runtime_thread_matrix_hard50_easy25_include_cases.txt \
+LIMIT=50 \
+bash scripts/run_solver_thread_matrix.sh reports/solver_runtime_thread_matrix_hard50_easy25 "$AC_RUN_1" "$AC_RUN_2"
+```
+
 ## Running Detached
 
 For a long unattended run, use a terminal multiplexer or a user systemd

@@ -9,7 +9,8 @@ import html
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 
@@ -17,6 +18,12 @@ import pandas as pd
 SOLVERS = ["gurobi", "mosek", "cbc"]
 SOLVER_COLORS = {"gurobi": "#2f80ed", "mosek": "#27ae60", "cbc": "#eb5757"}
 THREAD_COLORS = {1: "#1f2933", 2: "#2f80ed", 3: "#27ae60", 4: "#f2994a", 8: "#9b51e0", 16: "#eb5757"}
+
+
+def score_cmap():
+    cmap = plt.get_cmap("viridis_r").copy()
+    cmap.set_bad("#d1d5db")
+    return cmap
 
 
 def read_replicates(paths: list[Path]) -> pd.DataFrame:
@@ -394,18 +401,19 @@ def plot_score_delta_by_solver_thread(summary: pd.DataFrame, out: Path) -> None:
 
 
 def plot_score_by_amplicon_3threads(summary: pd.DataFrame, out: Path) -> None:
-    score = summary[(summary["threads"] == 3)].dropna(subset=["score_median"]).copy()
-    if score.empty:
+    cur = summary[summary["threads"] == 3].copy()
+    if cur.empty:
         return
-    score["amplicon"] = score["case_id"]
-    pivot = score.pivot_table(index="amplicon", columns="solver", values="score_median", aggfunc="median")
+    cur["amplicon"] = cur["case_id"]
+    pivot = cur.pivot_table(index="amplicon", columns="solver", values="score_median", aggfunc="median", dropna=False)
     cols = [solver for solver in SOLVERS if solver in pivot.columns]
     pivot = pivot[cols]
-    pivot = pivot.loc[pivot.max(axis=1).sort_values(ascending=True).index]
+    sort_key = pivot.max(axis=1).fillna(float("inf")).sort_values(ascending=True)
+    pivot = pivot.loc[sort_key.index]
     plt.figure(figsize=(7.2, max(5.0, 0.34 * len(pivot) + 1.4)))
     ax = plt.gca()
     values = pivot.values.astype(float)
-    im = ax.imshow(values, aspect="auto", cmap="viridis_r")
+    im = ax.imshow(np.ma.masked_invalid(values), aspect="auto", cmap=score_cmap())
     ax.set_xticks(np.arange(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns)
     ax.set_yticks(np.arange(len(pivot.index)))
@@ -417,24 +425,26 @@ def plot_score_by_amplicon_3threads(summary: pd.DataFrame, out: Path) -> None:
                 ax.text(j, i, f"{values[i, j]:.2f}", ha="center", va="center", fontsize=7)
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label("BFBArchitect score (lower is better)")
+    ax.text(1.01, -0.06, "grey = no score returned", transform=ax.transAxes, fontsize=8, color="#4b5563")
     savefig(out)
 
 
 def plot_score_by_amplicon_thread_matrix(summary: pd.DataFrame, out: Path) -> None:
-    score = summary.dropna(subset=["score_median"]).copy()
+    score = summary.copy()
     if score.empty:
         return
     score["amplicon"] = score["case_id"]
     score["column"] = score["solver"] + " t=" + score["threads"].astype(int).astype(str)
     cols = [f"{solver} t={thread}" for thread in sorted(score["threads"].dropna().unique().astype(int)) for solver in SOLVERS]
-    pivot = score.pivot_table(index="amplicon", columns="column", values="score_median", aggfunc="median")
+    pivot = score.pivot_table(index="amplicon", columns="column", values="score_median", aggfunc="median", dropna=False)
     cols = [col for col in cols if col in pivot.columns]
     pivot = pivot[cols]
-    pivot = pivot.loc[pivot.max(axis=1).sort_values(ascending=True).index]
+    sort_key = pivot.max(axis=1).fillna(float("inf")).sort_values(ascending=True)
+    pivot = pivot.loc[sort_key.index]
     plt.figure(figsize=(13.5, max(5.5, 0.34 * len(pivot) + 1.6)))
     ax = plt.gca()
     values = pivot.values.astype(float)
-    im = ax.imshow(values, aspect="auto", cmap="viridis_r")
+    im = ax.imshow(np.ma.masked_invalid(values), aspect="auto", cmap=score_cmap())
     ax.set_xticks(np.arange(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(np.arange(len(pivot.index)))
@@ -442,91 +452,127 @@ def plot_score_by_amplicon_thread_matrix(summary: pd.DataFrame, out: Path) -> No
     ax.set_title("BFBArchitect Score Per Amplicon by Solver and Thread Count")
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label("BFBArchitect score (lower is better)")
+    ax.text(1.01, -0.06, "grey = no score returned", transform=ax.transAxes, fontsize=8, color="#4b5563")
     savefig(out)
 
 
 def plot_score_range_by_amplicon(summary: pd.DataFrame, out: Path) -> None:
+    cases = summary.groupby(["source", "case_id"], dropna=False).size().reset_index()[["source", "case_id"]]
+    if cases.empty:
+        return
     score = summary.dropna(subset=["score_median"]).copy()
     if score.empty:
-        return
-    ranges = score.groupby(["source", "case_id"])["score_median"].agg(
-        min_score="min",
-        max_score="max",
-        median_score="median",
-    ).reset_index()
+        ranges = cases.assign(min_score=np.nan, max_score=np.nan, median_score=np.nan)
+    else:
+        scored = score.groupby(["source", "case_id"])["score_median"].agg(
+            min_score="min",
+            max_score="max",
+            median_score="median",
+        ).reset_index()
+        ranges = cases.merge(scored, on=["source", "case_id"], how="left")
     ranges["score_range"] = ranges["max_score"] - ranges["min_score"]
-    ranges = ranges.sort_values("score_range", ascending=True)
+    ranges["missing"] = ranges["score_range"].isna()
+    ranges = ranges.sort_values(["missing", "score_range"], ascending=[False, True])
     plt.figure(figsize=(9.0, max(5.0, 0.34 * len(ranges) + 1.5)))
     ax = plt.gca()
     y = np.arange(len(ranges))
-    ax.barh(y, ranges["score_range"], color="#2f80ed", alpha=0.85)
+    colors = np.where(ranges["missing"], "#d1d5db", "#2f80ed")
+    ax.barh(y, ranges["score_range"].fillna(0), color=colors, alpha=0.85)
+    for idx, row in enumerate(ranges.itertuples()):
+        if row.missing:
+            ax.text(0.02, idx, "no score", va="center", ha="left", fontsize=7, color="#4b5563")
     ax.set_yticks(y)
     ax.set_yticklabels(ranges["case_id"], fontsize=8)
     ax.set_xlabel("Score range across solver/thread combinations")
     ax.set_title("Per-Amplicon BFBArchitect Score Sensitivity")
+    ax.legend(handles=[Patch(facecolor="#d1d5db", label="no score returned")], loc="lower right", fontsize=8)
     ax.grid(True, axis="x", alpha=0.3)
     savefig(out)
 
 
 def write_score_cutoff_summary(summary: pd.DataFrame, out: Path, cutoff: float) -> pd.DataFrame:
+    cases = summary.groupby(["source", "case_id"], dropna=False).size().rename("total_configs").reset_index()
     score = summary.dropna(subset=["score_median"]).copy()
     if score.empty:
-        rows = pd.DataFrame(
-            columns=[
-                "source", "case_id", "n_configs", "min_score", "max_score", "score_range",
-                "bfb_call_fraction", "crosses_cutoff", "cutoff",
-            ]
+        rows = cases.assign(
+            n_scored_configs=0,
+            min_score=np.nan,
+            max_score=np.nan,
+            score_range=np.nan,
+            bfb_call_fraction=np.nan,
+            crosses_cutoff=False,
+            missing_all_scores=True,
+            cutoff=cutoff,
         )
         rows.to_csv(out, sep="\t", index=False)
         return rows
     score["bfb_call"] = score["score_median"] <= cutoff
-    rows = score.groupby(["source", "case_id"], dropna=False).agg(
+    scored = score.groupby(["source", "case_id"], dropna=False).agg(
         n_configs=("score_median", "count"),
         min_score=("score_median", "min"),
         max_score=("score_median", "max"),
         score_range=("score_median", lambda x: x.max() - x.min()),
         bfb_call_fraction=("bfb_call", "mean"),
     ).reset_index()
+    scored = scored.rename(columns={"n_configs": "n_scored_configs"})
+    rows = cases.merge(scored, on=["source", "case_id"], how="left")
     rows["crosses_cutoff"] = (rows["min_score"] <= cutoff) & (rows["max_score"] > cutoff)
+    rows["missing_all_scores"] = rows["n_scored_configs"].isna()
+    rows["n_scored_configs"] = rows["n_scored_configs"].fillna(0).astype(int)
     rows["cutoff"] = cutoff
-    rows = rows.sort_values(["crosses_cutoff", "score_range"], ascending=[False, False])
+    rows = rows.sort_values(["crosses_cutoff", "missing_all_scores", "score_range"], ascending=[False, True, False])
     rows.to_csv(out, sep="\t", index=False)
     return rows
 
 
 def plot_score_cutoff_fraction(summary: pd.DataFrame, out: Path, cutoff: float) -> None:
+    cases = summary.groupby(["source", "case_id"], dropna=False).size().reset_index()[["source", "case_id"]]
+    if cases.empty:
+        return
     score = summary.dropna(subset=["score_median"]).copy()
     if score.empty:
-        return
-    score["bfb_call"] = score["score_median"] <= cutoff
-    rows = score.groupby(["source", "case_id"], dropna=False).agg(
-        call_fraction=("bfb_call", "mean"),
-        min_score=("score_median", "min"),
-        max_score=("score_median", "max"),
-    ).reset_index()
-    rows["crosses"] = (rows["min_score"] <= cutoff) & (rows["max_score"] > cutoff)
-    rows = rows.sort_values(["crosses", "call_fraction", "case_id"], ascending=[False, True, True])
-    colors = np.where(rows["crosses"], "#eb5757", "#2f80ed")
+        rows = cases.assign(call_fraction=np.nan, min_score=np.nan, max_score=np.nan, crosses=False, missing=True)
+    else:
+        score["bfb_call"] = score["score_median"] <= cutoff
+        scored = score.groupby(["source", "case_id"], dropna=False).agg(
+            call_fraction=("bfb_call", "mean"),
+            min_score=("score_median", "min"),
+            max_score=("score_median", "max"),
+        ).reset_index()
+        rows = cases.merge(scored, on=["source", "case_id"], how="left")
+        rows["crosses"] = (rows["min_score"] <= cutoff) & (rows["max_score"] > cutoff)
+        rows["missing"] = rows["call_fraction"].isna()
+    rows = rows.sort_values(["crosses", "missing", "call_fraction", "case_id"], ascending=[False, True, True, True])
+    colors = np.where(rows["missing"], "#d1d5db", np.where(rows["crosses"], "#eb5757", "#2f80ed"))
     plt.figure(figsize=(9.0, max(5.0, 0.34 * len(rows) + 1.5)))
     ax = plt.gca()
     y = np.arange(len(rows))
-    ax.barh(y, rows["call_fraction"], color=colors, alpha=0.85)
+    ax.barh(y, rows["call_fraction"].fillna(0), color=colors, alpha=0.85)
     ax.set_xlim(0, 1)
     ax.set_yticks(y)
     ax.set_yticklabels(rows["case_id"], fontsize=8)
     ax.set_xlabel(f"Fraction of solver/thread configurations with score <= {cutoff:g}")
     ax.set_title("BFB Cutoff Stability by Amplicon")
+    ax.legend(
+        handles=[
+            Patch(facecolor="#eb5757", label="crosses cutoff"),
+            Patch(facecolor="#2f80ed", label="stable scored case"),
+            Patch(facecolor="#d1d5db", label="no score returned"),
+        ],
+        loc="lower right",
+        fontsize=8,
+    )
     ax.grid(True, axis="x", alpha=0.3)
     savefig(out)
 
 
 def plot_score_cutoff_matrix(summary: pd.DataFrame, out: Path, cutoff: float) -> None:
-    score = summary.dropna(subset=["score_median"]).copy()
+    score = summary.copy()
     if score.empty:
         return
     score["column"] = score["solver"] + " t=" + score["threads"].astype(int).astype(str)
     cols = [f"{solver} t={thread}" for thread in sorted(score["threads"].dropna().unique().astype(int)) for solver in SOLVERS]
-    pivot = score.pivot_table(index="case_key", columns="column", values="score_median", aggfunc="median")
+    pivot = score.pivot_table(index="case_key", columns="column", values="score_median", aggfunc="median", dropna=False)
     cols = [col for col in cols if col in pivot.columns]
     pivot = pivot[cols]
     ranges = pivot.agg(["min", "max"], axis=1)
@@ -534,29 +580,38 @@ def plot_score_cutoff_matrix(summary: pd.DataFrame, out: Path, cutoff: float) ->
     order = (
         pd.DataFrame({
             "crosses": crosses,
-            "distance": (ranges.mean(axis=1) - cutoff).abs(),
+            "distance": (ranges.mean(axis=1) - cutoff).abs().fillna(float("inf")),
             "range": ranges["max"] - ranges["min"],
+            "missing": pivot.isna().all(axis=1),
         })
-        .sort_values(["crosses", "distance", "range"], ascending=[False, True, False])
+        .sort_values(["crosses", "missing", "distance", "range"], ascending=[False, True, True, False])
         .index
     )
     pivot = pivot.loc[order]
+    calls = np.full(pivot.shape, 2.0)
     values = pivot.values.astype(float)
-    finite = values[np.isfinite(values)]
-    if len(finite) == 0:
-        return
-    spread = max(abs(float(np.nanmin(values)) - cutoff), abs(float(np.nanmax(values)) - cutoff), 0.25)
-    norm = TwoSlopeNorm(vmin=cutoff - spread, vcenter=cutoff, vmax=cutoff + spread)
+    calls[np.isfinite(values) & (values <= cutoff)] = 0.0
+    calls[np.isfinite(values) & (values > cutoff)] = 1.0
+    cmap = ListedColormap(["#2f80ed", "#f2994a", "#d1d5db"])
+    norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], cmap.N)
     plt.figure(figsize=(13.5, max(5.5, 0.35 * len(pivot) + 1.6)))
     ax = plt.gca()
-    im = ax.imshow(values, aspect="auto", cmap="coolwarm", norm=norm)
+    ax.imshow(calls, aspect="auto", cmap=cmap, norm=norm)
     ax.set_xticks(np.arange(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(np.arange(len(pivot.index)))
     ax.set_yticklabels([label.split(" / ", 1)[1] for label in pivot.index], fontsize=8)
-    ax.set_title(f"BFB Score Relative to {cutoff:g} Cutoff")
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label("BFBArchitect score")
+    ax.set_title(f"BFB Classification Matrix at Score Cutoff {cutoff:g}")
+    ax.legend(
+        handles=[
+            Patch(facecolor="#2f80ed", label=f"BFB score <= {cutoff:g}"),
+            Patch(facecolor="#f2994a", label=f"not BFB score > {cutoff:g}"),
+            Patch(facecolor="#d1d5db", label="no score returned"),
+        ],
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        fontsize=8,
+    )
     savefig(out)
 
 
@@ -596,7 +651,7 @@ def plot_score_change_heatmap(summary: pd.DataFrame, out: Path) -> None:
 
 def plot_speedup_heatmap(summary: pd.DataFrame, out: Path) -> None:
     standard = summary[summary["threads"] == 3].copy()
-    pivot = standard.pivot_table(index="case_id", columns="solver", values="median", aggfunc="first")
+    pivot = standard.pivot_table(index="case_key", columns="solver", values="median", aggfunc="first")
     if not {"gurobi", "mosek", "cbc"}.issubset(pivot.columns):
         return
     nonzero = pivot.replace(0, np.nan)
@@ -605,24 +660,71 @@ def plot_speedup_heatmap(summary: pd.DataFrame, out: Path) -> None:
         "MOSEK/Gurobi": nonzero["mosek"] / nonzero["gurobi"],
         "CBC/MOSEK": nonzero["cbc"] / nonzero["mosek"],
     })
-    order = ratios["CBC/Gurobi"].replace([np.inf, -np.inf], np.nan).sort_values(ascending=True).tail(20).index
+    log_ratios = np.log2(ratios.replace([np.inf, -np.inf], np.nan))
+    order_metric = log_ratios.apply(
+        lambda row: np.nanmax(np.abs(row)) if np.isfinite(row).any() else -1,
+        axis=1,
+    )
+    order = order_metric.sort_values(ascending=False).index
     ratios = ratios.loc[order]
     values = np.log2(ratios.replace([np.inf, -np.inf], np.nan).values.astype(float))
+    cmap = plt.get_cmap("coolwarm").copy()
+    cmap.set_bad("#d1d5db")
     plt.figure(figsize=(7.5, max(5.5, 0.32 * len(ratios) + 1.5)))
     ax = plt.gca()
-    im = ax.imshow(values, aspect="auto", cmap="coolwarm", vmin=-3, vmax=3)
+    im = ax.imshow(np.ma.masked_invalid(values), aspect="auto", cmap=cmap, vmin=-3, vmax=3)
     ax.set_xticks(np.arange(len(ratios.columns)))
     ax.set_xticklabels(ratios.columns)
     ax.set_yticks(np.arange(len(ratios.index)))
-    ax.set_yticklabels(ratios.index, fontsize=8)
-    ax.set_title("Relative Runtime Ratios at 3 Solver Threads (log2 scale)")
+    ax.set_yticklabels([label.split(" / ", 1)[1] for label in ratios.index], fontsize=8)
+    ax.set_title("Relative Runtime Ratios for All Selected Cases at 3 Solver Threads")
     for i in range(values.shape[0]):
         for j in range(values.shape[1]):
             label = "" if np.isnan(ratios.iloc[i, j]) else f"{ratios.iloc[i, j]:.1f}x"
             ax.text(j, i, label, ha="center", va="center", fontsize=7)
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label("log2(runtime ratio)")
+    ax.text(1.01, -0.06, "grey = invalid ratio because denominator runtime was 0", transform=ax.transAxes, fontsize=8, color="#4b5563")
     savefig(out)
+
+
+def write_timeout_followup(df: pd.DataFrame, out: Path, score_cutoff: float) -> pd.DataFrame:
+    rows = []
+    for threads in [2, 3]:
+        sub = df[df["threads"] == threads].copy()
+        timeout_cases = (
+            sub[sub["status"] == "timeout"]
+            .groupby(["replicate", "source", "case_id"], dropna=False)["solver"]
+            .nunique()
+            .reset_index(name="timeout_solver_count")
+        )
+        timeout_cases = timeout_cases[timeout_cases["timeout_solver_count"] >= 3]
+        for item in timeout_cases.itertuples():
+            sixteen = df[
+                (df["replicate"] == item.replicate)
+                & (df["source"] == item.source)
+                & (df["case_id"] == item.case_id)
+                & (df["threads"] == 16)
+            ]
+            for row in sixteen.itertuples():
+                rows.append({
+                    "replicate": item.replicate,
+                    "source": item.source,
+                    "case_id": item.case_id,
+                    "timed_out_threads": threads,
+                    "solver_16_threads": row.solver,
+                    "status_16_threads": row.status,
+                    "elapsed_16_threads": row.elapsed_s,
+                    "score_16_threads": row.score_min,
+                    "bfb_at_16_threads": row.score_min <= score_cutoff if pd.notna(row.score_min) else "",
+                })
+    fields = [
+        "replicate", "source", "case_id", "timed_out_threads", "solver_16_threads",
+        "status_16_threads", "elapsed_16_threads", "score_16_threads", "bfb_at_16_threads",
+    ]
+    out_df = pd.DataFrame(rows, columns=fields)
+    out_df.to_csv(out, sep="\t", index=False)
+    return out_df
 
 
 def write_html(
@@ -632,6 +734,7 @@ def write_html(
     replicate_paths: list[Path],
     score_cutoff_summary: pd.DataFrame,
     score_cutoff: float,
+    timeout_followup: pd.DataFrame,
 ) -> None:
     thread_values = sorted(int(t) for t in summary["threads"].dropna().unique())
     case_count = summary[["source", "case_id"]].drop_duplicates().shape[0]
@@ -653,11 +756,25 @@ def write_html(
         for row in slow.itertuples()
     ) or "<li>None at 3 solver threads.</li>"
     crossing = score_cutoff_summary[score_cutoff_summary.get("crosses_cutoff", False) == True]  # noqa: E712
+    missing_scores = score_cutoff_summary[score_cutoff_summary.get("missing_all_scores", False) == True]  # noqa: E712
     crossing_bits = "".join(
         f"<li>{html.escape(row.case_id)}: score range {row.min_score:.3g}-{row.max_score:.3g}, "
         f"BFB-call fraction {row.bfb_call_fraction:.2f}</li>"
         for row in crossing.itertuples()
     ) or f"<li>No selected amplicons crossed the {score_cutoff:g} cutoff.</li>"
+    missing_bits = "".join(
+        f"<li>{html.escape(row.case_id)}</li>"
+        for row in missing_scores.itertuples()
+    ) or "<li>None.</li>"
+    if timeout_followup.empty:
+        timeout_bits = "<li>No cases timed out on all solvers at 2 or 3 solver threads in this run.</li>"
+    else:
+        timeout_bits = "".join(
+            f"<li>{html.escape(row.case_id)}, t={row.timed_out_threads}: "
+            f"{html.escape(row.solver_16_threads)} at 16 threads score={html.escape(str(row.score_16_threads))}, "
+            f"status={html.escape(str(row.status_16_threads))}</li>"
+            for row in timeout_followup.itertuples()
+        )
     image_sections = "\n".join(
         f"<section><h2>{html.escape(title)}</h2><img src=\"{html.escape(path)}\" alt=\"{html.escape(title)}\"></section>"
         for title, path in images.items()
@@ -684,6 +801,8 @@ img {{ max-width: 100%; border: 1px solid #d9e2ec; }}
 <section><h2>3-Thread Summary</h2><ul>{''.join(solver_bits)}</ul></section>
 <section><h2>CBC Slow Cases at 3 Solver Threads</h2><ul>{slow_bits}</ul></section>
 <section><h2>BFB Score Cutoff Crossings</h2><p class="note">BFB cutoff: score <= {score_cutoff:g}.</p><ul>{crossing_bits}</ul></section>
+<section><h2>Missing BFB Scores</h2><p class="note">These selected cases completed but returned no BFBArchitect score, so older score-only plots hid them.</p><ul>{missing_bits}</ul></section>
+<section><h2>Timeout Follow-Up</h2><p class="note">This checks whether cases that timed out for all solvers at 2 or 3 solver threads later produced scores at 16 solver threads.</p><ul>{timeout_bits}</ul></section>
 {image_sections}
 </main>
 </body>
@@ -710,6 +829,7 @@ def main() -> None:
         args.out_dir / "score_cutoff_summary.tsv",
         args.score_cutoff,
     )
+    timeout_followup = write_timeout_followup(df, args.out_dir / "timeout_16thread_followup.tsv", args.score_cutoff)
 
     images = {
         "Runtime ECDF Small Multiples": "plots/runtime_ecdf_faceted.png",
@@ -724,7 +844,6 @@ def main() -> None:
         "Per-Amplicon BFBArchitect Score Sensitivity": "plots/score_range_by_amplicon.png",
         "BFB Score Cutoff Stability": "plots/score_cutoff_fraction.png",
         "BFB Score Cutoff Matrix": "plots/score_cutoff_matrix.png",
-        "BFB Score Delta by Solver and Thread Count": "plots/score_delta_by_solver_thread.png",
         "Per-Case Solver Runtime Comparison": "plots/case_solver_bars.png",
         "CBC Slow Cases": "plots/cbc_slow_cases.png",
         "Replicate Stability": "plots/replicate_stability.png",
@@ -742,12 +861,11 @@ def main() -> None:
     plot_score_range_by_amplicon(summary, args.out_dir / images["Per-Amplicon BFBArchitect Score Sensitivity"])
     plot_score_cutoff_fraction(summary, args.out_dir / images["BFB Score Cutoff Stability"], args.score_cutoff)
     plot_score_cutoff_matrix(summary, args.out_dir / images["BFB Score Cutoff Matrix"], args.score_cutoff)
-    plot_score_delta_by_solver_thread(summary, args.out_dir / images["BFB Score Delta by Solver and Thread Count"])
     plot_case_solver_bars(summary, args.out_dir / images["Per-Case Solver Runtime Comparison"])
     plot_cbc_slow(summary, args.out_dir / images["CBC Slow Cases"])
     plot_replicate_scatter(df, args.out_dir / images["Replicate Stability"])
     plot_speedup_heatmap(summary, args.out_dir / images["Relative Runtime Ratios"])
-    write_html(args.out_dir, images, summary, args.replicate, score_cutoff_summary, args.score_cutoff)
+    write_html(args.out_dir, images, summary, args.replicate, score_cutoff_summary, args.score_cutoff, timeout_followup)
     print(args.out_dir / "solver_runtime_plots.html")
 
 
