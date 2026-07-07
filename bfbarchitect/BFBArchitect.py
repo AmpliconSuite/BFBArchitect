@@ -21,6 +21,18 @@ except:
     from utils import create_logger, get_coverage_and_rc, get_normal_coverage, get_chrom_length
 
 BFB_OUTPUT_HEADER = f"#BFBArchitect {__version__}\n"
+_GUROBI_MISSING_IMPORT = "gurobipy is not installed"
+_GUROBI_UNAVAILABLE_TERMS = (
+    "expired",
+    "failed to connect",
+    "gurobi token",
+    "licence",
+    "license",
+    "network is unreachable",
+    "token server",
+    "token.gurobi.com",
+    "could not resolve host",
+)
 
 
 def _write_bfb_output_header(handle):
@@ -341,26 +353,121 @@ def _add_stream_handler(logger):
         sh.setFormatter(logging.Formatter('[%(name)s:%(levelname)s]\t%(message)s'))
         logger.addHandler(sh)
 
-def detect_solver() -> str:
-    """Return 'gurobi' if a Gurobi license and package are available,
-    otherwise 'mosek' if available, otherwise 'cbc'."""
-    # 1. Gurobi
-    try:
-        import gurobipy  # noqa: F401
-        if os.path.exists(os.path.expanduser('~/gurobi.lic')):
-            return 'gurobi'
-    except ImportError:
-        pass
+def _short_error(err):
+    return str(err).strip().splitlines()[0] if str(err).strip() else repr(err)
 
-    # 2. MOSEK
+
+def _looks_like_gurobi_unavailable(err):
+    err_msg = str(err).lower()
+    return any(term in err_msg for term in _GUROBI_UNAVAILABLE_TERMS)
+
+
+def _gurobi_availability_error():
+    """Return None when Gurobi can check out a license, otherwise an error string."""
+    env = None
+    try:
+        import gurobipy as gp
+    except ImportError:
+        return _GUROBI_MISSING_IMPORT
+
+    try:
+        env = gp.Env(empty=True)
+        env.setParam('OutputFlag', 0)
+        env.start()
+    except Exception as exc:
+        return _short_error(exc)
+    finally:
+        if env is not None:
+            try:
+                env.dispose()
+            except Exception:
+                pass
+
+    return None
+
+
+def _mosek_available():
     try:
         import mosek  # noqa: F401
-        if os.path.exists(os.path.expanduser('~/mosek/mosek.lic')):
-            return 'mosek'
     except ImportError:
-        pass
+        return False
+    return os.path.exists(os.path.expanduser('~/mosek/mosek.lic'))
 
-    return 'cbc'
+
+def _detect_solver_with_gurobi_error():
+    gurobi_error = _gurobi_availability_error()
+    if gurobi_error is None:
+        return 'gurobi', None
+    if _mosek_available():
+        return 'mosek', gurobi_error
+    return 'cbc', gurobi_error
+
+
+def _detect_non_gurobi_solver():
+    return 'mosek' if _mosek_available() else 'cbc'
+
+
+def detect_solver() -> str:
+    """Return 'gurobi' if a Gurobi license can be checked out,
+    otherwise 'mosek' if available, otherwise 'cbc'."""
+    solver, _ = _detect_solver_with_gurobi_error()
+    return solver
+
+
+def _resolve_solver(solver, logger, warn=True):
+    if solver is not None:
+        return solver, False
+
+    solver, gurobi_error = _detect_solver_with_gurobi_error()
+    if warn and solver != 'gurobi' and gurobi_error != _GUROBI_MISSING_IMPORT:
+        logger.warning(
+            f'Gurobi unavailable during solver autodetection ({gurobi_error}); '
+            f'using {solver.upper()} solver.'
+        )
+    return solver, True
+
+
+def _solve_bfb_ilp(cn_scaled, lf_scaled, rf_scaled, start_segment, solver, multiple,
+                   threads=8, log_file=None, verbose=False, score_fn=None,
+                   min_lp_bound=25, auto_solver=False, warn=True):
+    logger = logging.getLogger('BFBArchitect')
+
+    def _run(cur_solver):
+        if multiple and cur_solver != 'gurobi' and warn:
+            logger.warning(
+                f'--multiple requires Gurobi solution pools; continuing with '
+                f'single-solution {cur_solver.upper()} reconstruction.'
+            )
+
+        if cur_solver == 'gurobi':
+            pool_solutions = 50 if multiple else 1
+            return reconstruct_BFB_gurobi(
+                cn_scaled, lf_scaled, rf_scaled, start_segment,
+                pool_solutions=pool_solutions, max_threads=threads,
+                log_file=log_file, verbose=verbose, score_fn=score_fn,
+                min_lp_bound=min_lp_bound)
+        if cur_solver == 'mosek':
+            return reconstruct_BFB_mosek(
+                cn_scaled, lf_scaled, rf_scaled, start_segment,
+                max_threads=threads, log_file=log_file, verbose=verbose)
+
+        BFB_string, obj_val = reconstruct_BFB_cbc(
+            cn_scaled, lf_scaled, rf_scaled, start_segment,
+            max_threads=threads)
+        return [BFB_string], obj_val
+
+    try:
+        return _run(solver)
+    except Exception as exc:
+        if auto_solver and solver == 'gurobi' and _looks_like_gurobi_unavailable(exc):
+            fallback_solver = _detect_non_gurobi_solver()
+            if warn:
+                logger.warning(
+                    f'Gurobi unavailable ({_short_error(exc)}); retrying with '
+                    f'{fallback_solver.upper()} solver.'
+                )
+            return _run(fallback_solver)
+        raise
 
 def write_bfb_graph(output_fn, new_segments, SVs, sv_info):
     """Write a BFB graph file from pre-segmented data."""
@@ -440,8 +547,7 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         _add_stream_handler(logger)
 
     try:
-        if solver is None:
-            solver = detect_solver()
+        solver, auto_solver = _resolve_solver(solver, logger, warn=not silent)
         cn0, lf0, rf0 = cn[:], lf[:], rf[:]
         solve_cn, solve_lf, solve_rf = cn[:], lf[:], rf[:]
         if reverse_polarity:
@@ -477,23 +583,12 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
             _cn0, _lf0, _rf0, _mult = solve_cn[:], solve_lf[:], solve_rf[:], multiplicity
             _score_fn = lambda s: (compute_bfb_scores(_cn0, _lf0, _rf0, [s], _mult,
                                                       _null_log, silent=True) or [float('inf')])[0]
-        if multiple:
-            BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                            max_threads=threads, log_file=log_file,
-                                                            verbose=_verbose, score_fn=_score_fn,
-                                                            min_lp_bound=min_lp_bound)
-        elif solver == 'gurobi':
-            BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                            pool_solutions=1, max_threads=threads, log_file=log_file,
-                                                            verbose=_verbose, score_fn=_score_fn,
-                                                            min_lp_bound=min_lp_bound)
-        elif solver == 'mosek':
-            BFB_strings, obj_val = reconstruct_BFB_mosek(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                        max_threads=threads, log_file=log_file, verbose=_verbose)
-        else:
-            BFB_string, obj_val = reconstruct_BFB_cbc(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                          max_threads=threads)
-            BFB_strings = [BFB_string]
+        BFB_strings, obj_val = _solve_bfb_ilp(
+            cn_scaled, lf_scaled, rf_scaled, start_segment,
+            solver=solver, multiple=multiple, threads=threads,
+            log_file=log_file, verbose=_verbose, score_fn=_score_fn,
+            min_lp_bound=min_lp_bound, auto_solver=auto_solver,
+            warn=not silent)
         logger.info(f'ILP objective value: {obj_val}')
         if reverse_polarity:
             BFB_strings = [
@@ -508,14 +603,13 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
             logger.setLevel(old_level)
 
 def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=True, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25, reverse_polarity=False):
-    if solver is None:
-        solver = detect_solver()
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
     log_file = f'{output_prefix}.log'
     logger = create_logger('BFBArchitect', log_file)
     if verbose:
         _add_stream_handler(logger)
+    solver, auto_solver = _resolve_solver(solver, logger)
     start_time = time.time()
     logger.info(f'Command: python {Path(__file__).resolve()} --bam {bam_fn} --cns {cns_fn} --region {region} --output_prefix {output_prefix}' +
                  (' --segmentation' if segmentation else '') + (' --no-deletion' if not deletion else '') + (' --coverage ' + str(coverage) if coverage != None else '') + 
@@ -616,22 +710,11 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     rf_scaled = [c / multiplicity for c in solve_rf]
     polarity_label = ", reverse_polarity=True" if reverse_polarity else ""
     logger.info(f"Reconstructing BFB sequences using ILP (solver={solver}, multiplicity={multiplicity}{polarity_label})...")
-    if multiple:
-        BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                        max_threads=threads, log_file=log_file, verbose=verbose,
-                                                        min_lp_bound=min_lp_bound)
-    else:
-        if solver == 'gurobi':
-            BFB_strings, obj_val = reconstruct_BFB_gurobi(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                            pool_solutions=1, max_threads=threads, log_file=log_file,
-                                                            verbose=verbose, min_lp_bound=min_lp_bound)
-        elif solver == 'mosek':
-            BFB_strings, obj_val = reconstruct_BFB_mosek(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                        max_threads=threads, log_file=log_file, verbose=verbose)
-        else:
-            BFB_string, obj_val = reconstruct_BFB_cbc(cn_scaled, lf_scaled, rf_scaled, start_segment,
-                                                          max_threads=threads)
-            BFB_strings = [BFB_string]
+    BFB_strings, obj_val = _solve_bfb_ilp(
+        cn_scaled, lf_scaled, rf_scaled, start_segment,
+        solver=solver, multiple=multiple, threads=threads,
+        log_file=log_file, verbose=verbose, min_lp_bound=min_lp_bound,
+        auto_solver=auto_solver)
     logger.info(f'ILP objective value: {obj_val}')
     if reverse_polarity:
         BFB_strings = [

@@ -66,7 +66,7 @@ BFBArchitect-batch --help
 ```
 
 ### Gurobi license (recommended for efficient ILP solving)
-Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when the license file exists. If Gurobi is not licensed but MOSEK is already installed and licensed, BFBArchitect falls back to MOSEK. Otherwise it uses the open-source CBC solver (slower, no solution pool). The solver can also be set explicitly via `--solver gurobi|mosek|cbc`.
+Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when it can successfully check out a license. If Gurobi is not available, including when a token-server or network license check fails, BFBArchitect falls back to MOSEK when it is installed and licensed. Otherwise it uses the open-source CBC solver (slower, no solution pool). The solver can also be set explicitly via `--solver gurobi|mosek|cbc`; an explicit `--solver gurobi` request fails if Gurobi cannot start.
    
 
 ## Running
@@ -124,7 +124,7 @@ BFBArchitect.py --graph <AA_graph.txt> --reverse_polarity --output_prefix <dir/o
 - --deletion: Enable deletion handling explicitly. This is the default and is retained for compatibility with older commands.
 
 ### Optional arguments (both modes)
-- --multiple: Reconstruct multiple optimal BFB candidate sequences (requires Gurobi)
+- --multiple: Reconstruct multiple optimal BFB candidate sequences. This requires Gurobi solution pools; with MOSEK or CBC, BFBArchitect warns and continues with single-solution reconstruction.
 - --solver gurobi|mosek|cbc: ILP solver to use (default: autodetect)
 - -t / --threads <int>: Number of threads for the ILP solver (default: 8)
 - --region <string>: (graph mode) process a specific region only, bypassing auto-detection (e.g. chr7:120000000-125000000). Mutually exclusive with --whole_graph.
