@@ -1,0 +1,9 @@
+sample_name	amplicon_number	profile_min_score	profile_mode	mode	run_region	multiplicity	score
+HMF003095	amplicon3	1.04	default + reverse_polarity	default / region	12:24468993-26949306	4	1.04101
+HMF003095	amplicon3	1.04	default + reverse_polarity	default / region + reverse_polarity	12:24468993-26949306	4	7.28740
+HMF003095	amplicon3	1.04	default + reverse_polarity	whole graph	12:24718650-26699572	4	1.04101
+HMF003095	amplicon3	1.04	default + reverse_polarity	whole graph + reverse_polarity	12:24718650-26699572	4	7.28740
+HMF000343	amplicon1	1.30	default + reverse_polarity	default / region	6:106621285-108728557	3	2.94192
+HMF000343	amplicon1	1.30	default + reverse_polarity	default / region + reverse_polarity	6:106621285-108728557	3	1.30267
+HMF000343	amplicon1	1.30	default + reverse_polarity	whole graph	6:106871811-125323904	3	2.90429
+HMF000343	amplicon1	1.30	default + reverse_polarity	whole graph + reverse_polarity	6:106871811-125323904	3	1.26505
