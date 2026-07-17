@@ -22,16 +22,38 @@ except:
 
 BFB_OUTPUT_HEADER = f"#BFBArchitect {__version__}\n"
 _GUROBI_MISSING_IMPORT = "gurobipy is not installed"
+_GUROBI_UNAVAILABLE_ERROR_CODES = {
+    10009,  # NO_LICENSE
+    10022,  # NETWORK
+    10023,  # JOB_REJECTED
+    10028,  # CLOUD
+    10030,  # CSWORKER
+    10032,  # SECURITY
+}
 _GUROBI_UNAVAILABLE_TERMS = (
     "expired",
     "failed to connect",
+    "gurobipy is not installed",
     "gurobi token",
     "licence",
     "license",
     "network is unreachable",
+    "no module named 'gurobipy'",
     "token server",
     "token.gurobi.com",
     "could not resolve host",
+    "wls",
+)
+_MOSEK_LICENSE_ERROR_CODES = set(range(1000, 1029))
+_MOSEK_UNAVAILABLE_TERMS = (
+    "cannot connect to the license server",
+    "flexlm",
+    "libmosek",
+    "licence",
+    "license",
+    "mosek is not installed",
+    "no module named 'mosek'",
+    "token server",
 )
 
 
@@ -353,13 +375,50 @@ def _add_stream_handler(logger):
         sh.setFormatter(logging.Formatter('[%(name)s:%(levelname)s]\t%(message)s'))
         logger.addHandler(sh)
 
-def _short_error(err):
-    return str(err).strip().splitlines()[0] if str(err).strip() else repr(err)
+def _short_error(err, solver=None):
+    message = str(err).strip()
+    if not message:
+        return repr(err)
+
+    # License variables may contain credentials or, for MOSEK, the entire
+    # license text. Never allow their values to be copied into a log message.
+    mosek_license = os.environ.get('MOSEKLM_LICENSE_FILE', '')
+    if solver in (None, 'mosek') and 'START_LICENSE' in mosek_license[:256].upper():
+        return 'license configuration rejected (details redacted)'
+    variables = {
+        'gurobi': ('GRB_LICENSE_FILE',),
+        'mosek': ('MOSEKLM_LICENSE_FILE',),
+    }.get(solver, ('GRB_LICENSE_FILE', 'MOSEKLM_LICENSE_FILE'))
+    for variable in variables:
+        value = os.environ.get(variable)
+        if value:
+            message = message.replace(value, f'${variable}')
+    if 'START_LICENSE' in message.upper():
+        return 'license configuration rejected (details redacted)'
+    return message.splitlines()[0]
+
+
+def _error_code(err):
+    """Return a solver exception's numeric error code when it exposes one."""
+    code = getattr(err, 'errno', None)
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return None
 
 
 def _looks_like_gurobi_unavailable(err):
+    if _error_code(err) in _GUROBI_UNAVAILABLE_ERROR_CODES:
+        return True
     err_msg = str(err).lower()
     return any(term in err_msg for term in _GUROBI_UNAVAILABLE_TERMS)
+
+
+def _looks_like_mosek_unavailable(err):
+    if _error_code(err) in _MOSEK_LICENSE_ERROR_CODES:
+        return True
+    err_msg = str(err).lower()
+    return any(term in err_msg for term in _MOSEK_UNAVAILABLE_TERMS)
 
 
 def _gurobi_availability_error():
@@ -375,7 +434,7 @@ def _gurobi_availability_error():
         env.setParam('OutputFlag', 0)
         env.start()
     except Exception as exc:
-        return _short_error(exc)
+        return _short_error(exc, solver='gurobi')
     finally:
         if env is not None:
             try:
@@ -386,12 +445,49 @@ def _gurobi_availability_error():
     return None
 
 
+def _mosek_license_configured():
+    """Check supported MOSEK license locations without reading license data."""
+    configured = os.environ.get('MOSEKLM_LICENSE_FILE', '').strip()
+    if not configured:
+        return os.path.isfile(os.path.expanduser('~/mosek/mosek.lic'))
+
+    # MOSEK accepts inline license text, token servers (@host or port@host),
+    # and search lists separated by the platform path separator. FlexNet also
+    # accepts a directory containing license files; this is how AmpliconSuite
+    # mounts /home/mosek/ into its containers.
+    if 'START_LICENSE' in configured[:256].upper():
+        return True
+
+    for entry in configured.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        server_prefix = entry.split('@', 1)[0] if '@' in entry else None
+        if entry.startswith('@') or (server_prefix and server_prefix.isdigit()):
+            return True
+
+        try:
+            path = os.path.expanduser(entry)
+            if os.path.isfile(path):
+                return True
+            if os.path.isdir(path):
+                if os.path.isfile(os.path.join(path, 'mosek.lic')):
+                    return True
+                with os.scandir(path) as entries:
+                    if any(item.is_file() and item.name.lower().endswith('.lic')
+                           for item in entries):
+                        return True
+        except (OSError, RuntimeError):
+            continue
+    return False
+
+
 def _mosek_available():
     try:
         import mosek  # noqa: F401
     except ImportError:
         return False
-    return os.path.exists(os.path.expanduser('~/mosek/mosek.lic'))
+    return _mosek_license_configured()
 
 
 def _detect_solver_with_gurobi_error():
@@ -456,18 +552,27 @@ def _solve_bfb_ilp(cn_scaled, lf_scaled, rf_scaled, start_segment, solver, multi
             max_threads=threads)
         return [BFB_string], obj_val
 
-    try:
-        return _run(solver)
-    except Exception as exc:
-        if auto_solver and solver == 'gurobi' and _looks_like_gurobi_unavailable(exc):
-            fallback_solver = _detect_non_gurobi_solver()
+    current_solver = solver
+    while True:
+        try:
+            return _run(current_solver)
+        except Exception as exc:
+            if not auto_solver:
+                raise
+            if current_solver == 'gurobi' and _looks_like_gurobi_unavailable(exc):
+                fallback_solver = _detect_non_gurobi_solver()
+            elif current_solver == 'mosek' and _looks_like_mosek_unavailable(exc):
+                fallback_solver = 'cbc'
+            else:
+                raise
+
             if warn:
                 logger.warning(
-                    f'Gurobi unavailable ({_short_error(exc)}); retrying with '
-                    f'{fallback_solver.upper()} solver.'
+                    f'{current_solver.title()} unavailable '
+                    f'({_short_error(exc, solver=current_solver)}); '
+                    f'retrying with {fallback_solver.upper()} solver.'
                 )
-            return _run(fallback_solver)
-        raise
+            current_solver = fallback_solver
 
 def write_bfb_graph(output_fn, new_segments, SVs, sv_info):
     """Write a BFB graph file from pre-segmented data."""

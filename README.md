@@ -65,8 +65,12 @@ BFBArchitect-call-cnv --help
 BFBArchitect-batch --help
 ```
 
-### Gurobi license (recommended for efficient ILP solving)
-Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when it can successfully check out a license. If Gurobi is not available, including when a token-server or network license check fails, BFBArchitect falls back to MOSEK when it is installed and licensed. Otherwise it uses the open-source CBC solver (slower, no solution pool). The solver can also be set explicitly via `--solver gurobi|mosek|cbc`; an explicit `--solver gurobi` request fails if Gurobi cannot start.
+### Solver licenses and automatic fallback
+Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```, or set `GRB_LICENSE_FILE` to its location. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when it can successfully start a licensed environment.
+
+MOSEK remains available as the second automatic choice. Its default license location is `$HOME/mosek/mosek.lic`; BFBArchitect also honors `MOSEKLM_LICENSE_FILE` when it contains a license-file path, a directory containing `mosek.lic`, a platform-separated search list, a token server (`@host` or `port@host`), or inline license configuration. License contents are never logged.
+
+Automatic selection uses Gurobi, then MOSEK, then the open-source CBC solver (slower, no solution pool). If an automatically selected commercial solver later fails because its license, network, or remote service is unavailable, BFBArchitect logs the failure and retries the next available solver. The solver can also be set explicitly via `--solver gurobi|mosek|cbc`; explicit requests are strict and do not silently switch solvers.
    
 
 ## Running
