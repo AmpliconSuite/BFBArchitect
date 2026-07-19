@@ -2,6 +2,9 @@ import argparse
 import random
 import pysam
 
+from bfbarchitect.BFBArchitect import BFB_OUTPUT_HEADER
+
+
 def simulate_BFB_sequence(n_segments, n_foldbacks, is_reverse, no_rep):
     BFB_sequence = []
     if is_reverse:
@@ -129,6 +132,7 @@ def ReverseComplementStr(dna_str):
 def generate_graph_file(output_fn, segments, CNs, SVs):
     # Generate graph.txt
     out_file = open(output_fn, 'w')
+    out_file.write(BFB_OUTPUT_HEADER)
     out_file.write('SequenceEdge: StartPosition, EndPosition, PredictedCN, AverageCoverage, Size, NumberOfLongReads\n')
     for i, seg in enumerate(segments):
         size = seg[2] - seg[1] + 1
@@ -148,6 +152,7 @@ def generate_graph_file(output_fn, segments, CNs, SVs):
 def generate_cycle_file(output_fn, segments, BFB_sequence, length):
     # Generate cycle.txt
     out_file = open(output_fn, 'w')
+    out_file.write(BFB_OUTPUT_HEADER)
     out_file.write(f'Interval	1	{segments[0][0]}	{segments[0][1]}	{segments[-1][2]}\n')
     out_file.write('List of cycle segments\n')
     for i, segment in enumerate(segments):
