@@ -20,6 +20,12 @@ except:
     from datatypes import CHR_CENTRO, build_centromere_dict
     from utils import create_logger, get_coverage_and_rc, get_normal_coverage, get_chrom_length
 
+BFB_OUTPUT_HEADER = f"#BFBArchitect {__version__}\n"
+
+
+def _write_bfb_output_header(handle):
+    handle.write(BFB_OUTPUT_HEADER)
+
 
 def _lookup_chrom(d, chrom, label):
     """Dict lookup with an informative error when the chromosome is missing.
@@ -359,6 +365,7 @@ def detect_solver() -> str:
 def write_bfb_graph(output_fn, new_segments, SVs, sv_info):
     """Write a BFB graph file from pre-segmented data."""
     with open(output_fn, 'w') as f:
+        _write_bfb_output_header(f)
         f.write('SequenceEdge: StartPosition, EndPosition, PredictedCN, AverageCoverage, Size, NumberReadsMapped\n')
         for seg in new_segments:
             size = seg[2] - seg[1] + 1
@@ -387,6 +394,7 @@ def write_bfb_cycles(output_fn, new_segments, BFB_strings, scores, multiplicity)
             chrom, start, end = next_chrom, next_start, next_end
     intervals.append((chrom, start, end))
     with open(output_fn, 'w') as f:
+        _write_bfb_output_header(f)
         for i, (chrom, start, end) in enumerate(intervals):
             f.write(f'Interval\t{i+1}\t{chrom}\t{start}\t{end}\n')
         f.write('List of cycle segments\n')
