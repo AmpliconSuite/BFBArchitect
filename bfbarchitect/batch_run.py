@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 
-from bfbarchitect.datatypes import SV, chrom_sort_key, build_centromere_dict
-from bfbarchitect.BFBArchitect import reconstruct_bfb_from_bam
-from bfbarchitect.BFBVisualizer import visualize_BFB
-
+try:
+    from bfbarchitect.datatypes import SV, chrom_sort_key, build_centromere_dict
+    from bfbarchitect.BFBArchitect import reconstruct_bfb_from_bam
+    from bfbarchitect.BFBVisualizer import visualize_BFB
+except:
+    from datatypes import SV, chrom_sort_key, build_centromere_dict
+    from BFBArchitect import reconstruct_bfb_from_bam
+    from BFBVisualizer import visualize_BFB
 
 def parse_SV(sv_str):
     bkp1, bkp2 = sv_str.split("->")
