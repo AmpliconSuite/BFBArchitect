@@ -226,7 +226,7 @@ def find_in_foldback(segment, direction, foldbacks):
             return True
     return False
 
-def plot_structure(ax, score, segments_coordinates, arm,max_y,max_x, foldbacks):
+def plot_structure(ax, score, segments_coordinates, max_y,max_x, foldbacks):
     try:
         d = args.deletion.split(',')
         deletion_start, deletion_end = int(d[0]), int(d[1])
@@ -240,11 +240,9 @@ def plot_structure(ax, score, segments_coordinates, arm,max_y,max_x, foldbacks):
     y_increase = 0.028
     color = '#0072b2'
     edgecolor = 'black'
-    direction = 'right'
+    direction = 'right' if structure[0] == 'A' else 'left'
     prev = ''
     y = max_y* 1.2
-    if arm == 'p':
-        direction = 'left'
     for i, s in enumerate(structure):
         if s != prev:
             start, end = segments_coordinates[s]['start'], segments_coordinates[s]['end']
@@ -305,13 +303,12 @@ def plot_structure(ax, score, segments_coordinates, arm,max_y,max_x, foldbacks):
                 ax.annotate("", xy=(segments_coordinates[s]['start'],y + (rectangle_width/2) * max_y), xytext=(segments_coordinates[s]['start'] - arrow_length,y + (rectangle_width/2) * max_y), arrowprops=prop)
     ax.annotate('x'+str(score['Multiplicity']), xy = (ax.get_xlim()[1]-0.08*max_x, 0.90*ax.get_ylim()[1]),weight = 'bold',ha = 'center')
 
-def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotation=None, deletion=None, pdf=False, multiple=False, centromere_dict=None):
+def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotation=None, deletion=None, pdf=False, multiple=False, centromere=None):
     logger = create_logger('BFBVisualizer', f'{output_prefix}_visualization.log')
     logger.info(f'Command: python {Path(__file__).resolve()} --graph {graph_file} --cycle {cycle_file} --cnr {cnr_file} --output_prefix {output_prefix}' + (f' --deletion {deletion}' if deletion else '')
             + (f' --gene {gene_annotation}' if gene_annotation else '') + (f' --pdf' if pdf else ''))
     all_scores, seg_num = parse_scores(cycle_file, multiple=multiple)
     segments_coordinates = parse_segment_coordinates(graph_file, seg_num)
-    reconstructed_structure = ''
     chrom , start , end = detect_start_end(segments_coordinates)
     foldbacks_coordinate = parse_foldback_coordinate(graph_file, segments_coordinates, chrom, start, end)
     if cnr_file == None:
@@ -324,10 +321,9 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
             y.append(segments_coordinates[s]['cn'])
     else:
         x, x_ranges, y = extract_fcna(cnr_file, chrom, start, end)
-    if centromere_dict is None:
-        centromere_dict = CHR_CENTRO
     arm = ''
-    if max(x) < centromere_dict.get(chrom, CHR_CENTRO.get(chrom, 0)):
+    centromere_dict = build_centromere_dict(centromere)
+    if max(x) < centromere_dict.get(chrom, 0):
         arm = 'p'
     else:
         arm = 'q'
@@ -347,8 +343,8 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
         plot_segments(ax, segments_coordinates)
         if gene_annotation is not None:
             plot_genes(ax, gene_annotation, chrom, start, end, max(y))
-        plot_foldbacks(ax, foldbacks_coordinate,max(y),max(x)-min(x), min(x))
-        plot_structure(ax, scores, segments_coordinates,arm,max(y),max(x)-min(x),foldbacks_coordinate)
+        plot_foldbacks(ax, foldbacks_coordinate, max(y), max(x)-min(x), min(x))
+        plot_structure(ax, scores, segments_coordinates, max(y), max(x)-min(x), foldbacks_coordinate)
         plt.xlabel('Position', fontsize=16)
         plt.ylabel('Copy number', fontsize=16)
         ylim = ax.get_ylim()
@@ -368,7 +364,7 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
         # plt.annotate("Score = {score}".format(score = str(scores['Final_score'])[:4]),xy = (0.1,0.1),xycoords='axes fraction',fontsize=6)
         cell_line = output_prefix.split('/')[-1].split('_')[0]
         plt.title(cell_line+' '+str(chrom)+arm, fontsize=16)
-        plt.savefig(output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'), dpi = 300)
+        plt.savefig(output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'), dpi = 300, bbox_inches='tight')
         plt.close()
         logger.info('Saved figure to '+output_prefix+'_'+str(index_1+1)+('.pdf' if pdf else '.png'))
 
@@ -376,12 +372,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-graph", "--graph", help="graph.txt dir", required=True)
     parser.add_argument("-cycle", "--cycle", help="cycles.txt dir", required=True)
-    parser.add_argument("-cnr", "--cnr", help="cnr dir", required=True)
     parser.add_argument("-o", "--output_prefix", help="Output_dir", required=True)
+    parser.add_argument("-cnr", "--cnr", help="cnr dir")
     parser.add_argument("-d", "--deletion", help="Deletion, e.g., \"1,10000\"")
     parser.add_argument("-pdf", "--pdf", action='store_true', help="Output pdf format")
     parser.add_argument("-g", "--gene", help="Gene annotation", default=None)
     parser.add_argument("-m", "--multiple", action='store_true', help="Visualize all structures")
     parser.add_argument("--centromere", help="Path to a centromere BED file (hg38 defaults used if not provided).", default=None)
     args = parser.parse_args()
-    visualize_BFB(args.cycle, args.graph, args.cnr, args.output_prefix, gene_annotation=args.gene, deletion=args.deletion, pdf=args.pdf, multiple=args.multiple, centromere_dict=build_centromere_dict(args.centromere))
+    visualize_BFB(args.cycle, args.graph, args.cnr, args.output_prefix, gene_annotation=args.gene, deletion=args.deletion, pdf=args.pdf, multiple=args.multiple, centromere=args.centromere)
