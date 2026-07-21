@@ -13,3 +13,11 @@ diagnostics/
 scripts/__pycache__/
 scripts/*ccle*.py
 scripts/gen_ccle_tst_report.py
+
+# Generated solver benchmark outputs. Keep the scripts and docs, not local run artifacts.
+reports/solver_runtime*/
+reports/solver_runtime*
+reports/*solver_runtime*.log
+
+# Generated reverse-polarity report outputs. Keep the script and input examples, not local run artifacts.
+reports/bfb_reverse_polarity_usage/

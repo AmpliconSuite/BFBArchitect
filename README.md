@@ -65,8 +65,12 @@ BFBArchitect-call-cnv --help
 BFBArchitect-batch --help
 ```
 
-### Gurobi license (recommended for efficient ILP solving)
-Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when the license file exists. If Gurobi is not licensed but MOSEK is already installed and licensed, BFBArchitect falls back to MOSEK. Otherwise it uses the open-source CBC solver (slower, no solution pool). The solver can also be set explicitly via `--solver gurobi|mosek|cbc`.
+### Solver licenses and automatic fallback
+Download a Gurobi optimizer license ([free for academic use](https://support.gurobi.com/hc/en-us/articles/360040541251-How-do-I-obtain-a-free-academic-license)) and place the ```gurobi.lic``` file at ```$HOME/gurobi.lic```, or set `GRB_LICENSE_FILE` to its location. BFBArchitect installs the Gurobi Python bindings by default and uses Gurobi when it can successfully start a licensed environment.
+
+MOSEK remains available as the second automatic choice. Its default license location is `$HOME/mosek/mosek.lic`; BFBArchitect also honors `MOSEKLM_LICENSE_FILE` when it contains a license-file path, a directory containing `mosek.lic`, a platform-separated search list, a token server (`@host` or `port@host`), or inline license configuration. License contents are never logged.
+
+Automatic selection uses Gurobi, then MOSEK, then the open-source CBC solver (slower, no solution pool). If an automatically selected commercial solver later fails because its license, network, or remote service is unavailable, BFBArchitect logs the failure and retries the next available solver. The solver can also be set explicitly via `--solver gurobi|mosek|cbc`; explicit requests are strict and do not silently switch solvers.
    
 
 ## Running
@@ -124,7 +128,7 @@ BFBArchitect.py --graph <AA_graph.txt> --reverse_polarity --output_prefix <dir/o
 - --deletion: Enable deletion handling explicitly. This is the default and is retained for compatibility with older commands.
 
 ### Optional arguments (both modes)
-- --multiple: Reconstruct multiple optimal BFB candidate sequences (requires Gurobi)
+- --multiple: Reconstruct multiple optimal BFB candidate sequences. This requires Gurobi solution pools; with MOSEK or CBC, BFBArchitect warns and continues with single-solution reconstruction.
 - --solver gurobi|mosek|cbc: ILP solver to use (default: autodetect)
 - -t / --threads <int>: Number of threads for the ILP solver (default: 8)
 - --region <string>: (graph mode) process a specific region only, bypassing auto-detection (e.g. chr7:120000000-125000000). Mutually exclusive with --whole_graph.

@@ -1,0 +1,5 @@
+cohort	ref	root
+TCGA	GRCh37	/path/to/TCGA_cutoff_passed_AC_2_0_0
+HMF	GRCh37	/path/to/HMF_AC_2_0_0
+CCLE	GRCh38	/path/to/ccle_hg38_ac_2-0-0
+Cell line models	GRCh38	/path/to/classification_GRCh38_2_0_0
