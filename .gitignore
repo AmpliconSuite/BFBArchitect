@@ -4,6 +4,7 @@ simulation/nanosim_models/human_giab_hg002_sub1M_kitv14_dorado/
 simulation/nanosim_models/promethion_10_4_1_guppy_model/
 BFBArchitect.egg-info/
 build/
+dist/
 _tests/
 CLAUDE.md
 GEMINI.md
