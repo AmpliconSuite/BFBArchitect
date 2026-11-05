@@ -7,11 +7,18 @@ import pandas as pd
 from collections import defaultdict
 from pathlib import Path
 
-from bfbarchitect._version import __version__
-from bfbarchitect.SVCaller import call_SVs
-from bfbarchitect.BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
-from bfbarchitect.datatypes import CHR_CENTRO, build_centromere_dict
-from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
+if __package__:
+    from bfbarchitect._version import __version__
+    from bfbarchitect.SVCaller import call_SVs
+    from bfbarchitect.BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
+    from bfbarchitect.datatypes import CHR_CENTRO, build_centromere_dict
+    from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
+else:  # run directly as a script from a source checkout
+    from _version import __version__
+    from SVCaller import call_SVs
+    from BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
+    from datatypes import CHR_CENTRO, build_centromere_dict
+    from utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
 
 BFB_OUTPUT_HEADER = f"#BFBArchitect {__version__}\n"
 _GUROBI_MISSING_IMPORT = "gurobipy is not installed"
@@ -849,11 +856,11 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
-    try:
+    if __package__:
         from bfbarchitect.graph_input import (find_bfb_candidate_regions,
                                                subsect_graph_for_region,
                                                whole_graph_as_region)
-    except ImportError:
+    else:
         from graph_input import (find_bfb_candidate_regions,
                                   subsect_graph_for_region,
                                   whole_graph_as_region)
@@ -942,9 +949,9 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
     """
     CLI entry point to reconstruct BFB sequences from an AA-format _graph.txt file.
     """
-    try:
+    if __package__:
         from bfbarchitect.BFBVisualizer import visualize_BFB
-    except ImportError:
+    else:
         from BFBVisualizer import visualize_BFB
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO

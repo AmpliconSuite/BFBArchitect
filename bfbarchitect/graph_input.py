@@ -2,7 +2,10 @@ import logging
 import re
 from collections import defaultdict, deque
 
-from bfbarchitect.datatypes import SV, CHR_CENTRO
+if __package__:
+    from bfbarchitect.datatypes import SV, CHR_CENTRO
+else:  # imported by a module that was run directly as a script
+    from datatypes import SV, CHR_CENTRO
 
 MAX_FOLDBACKS_FOR_GRAPH_RECON = 50
 MAX_GRAPH_RECON_SEGMENTS = 100

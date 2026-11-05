@@ -6,8 +6,12 @@ import argparse
 
 LOGGER = logging.getLogger('BFBArchitect')
 
-from bfbarchitect.datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
-from bfbarchitect.utils import get_normal_coverage, get_coverage_and_rc
+if __package__:
+    from bfbarchitect.datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
+    from bfbarchitect.utils import get_normal_coverage, get_coverage_and_rc
+else:  # run directly as a script from a source checkout
+    from datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
+    from utils import get_normal_coverage, get_coverage_and_rc
 
 def query_ends_from_cigar(cigar_str: str, strand: str) -> tuple[int, int, int]:
     """
