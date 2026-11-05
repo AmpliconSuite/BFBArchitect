@@ -7,18 +7,11 @@ import pandas as pd
 from collections import defaultdict
 from pathlib import Path
 
-try:
-    from bfbarchitect._version import __version__
-    from bfbarchitect.SVCaller import call_SVs
-    from bfbarchitect.BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
-    from bfbarchitect.datatypes import CHR_CENTRO, build_centromere_dict
-    from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
-except:
-    from _version import __version__
-    from SVCaller import call_SVs
-    from BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
-    from datatypes import CHR_CENTRO, build_centromere_dict
-    from utils import create_logger, get_coverage_and_rc, get_normal_coverage, get_chrom_length
+from bfbarchitect._version import __version__
+from bfbarchitect.SVCaller import call_SVs
+from bfbarchitect.BFBSolver import reconstruct_BFB_cbc, reconstruct_BFB_gurobi, reconstruct_BFB_mosek, check_BFB_string, print_BFB_string
+from bfbarchitect.datatypes import CHR_CENTRO, build_centromere_dict
+from bfbarchitect.utils import create_logger, get_normal_coverage, get_coverage_and_rc, get_chrom_length
 
 BFB_OUTPUT_HEADER = f"#BFBArchitect {__version__}\n"
 _GUROBI_MISSING_IMPORT = "gurobipy is not installed"

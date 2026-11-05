@@ -4,12 +4,8 @@ import pandas as pd
 from pathlib import Path
 import hashlib
 
-try:
-    from bfbarchitect.datatypes import SV, CHR_CENTRO, build_centromere_dict
-    from bfbarchitect.utils import create_logger
-except:
-    from datatypes import SV, CHR_CENTRO, build_centromere_dict
-    from utils import create_logger
+from bfbarchitect.datatypes import SV, CHR_CENTRO, build_centromere_dict
+from bfbarchitect.utils import create_logger
 
 font = {'family' : 'Arial',
         'size'   : 12}

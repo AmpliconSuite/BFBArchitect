@@ -1,4 +1,3 @@
-from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
 import logging
 import sys
 import time as _time
@@ -15,9 +14,28 @@ def _build_bfb_string(consecutive_sequences):
             BFB_string += [-x for x in range(j, i - 1, -1)]
     return BFB_string
 
+def _add_variable(model, name, **kwargs):
+    """Create an ILP variable. PuLP 4 creates variables through the model; older PuLP constructs them directly."""
+    if hasattr(model, 'add_variable'):
+        return model.add_variable(name, **kwargs)
+    from pulp import LpVariable
+    return LpVariable(name=name, **kwargs)
+
+def _cbc_command(max_time, max_threads):
+    """Return the CBC command. PuLP 4 removed PULP_CBC_CMD, and Conda's older PuLP has no bundled CBC to run."""
+    import pulp
+    settings = dict(timeLimit=max_time, threads=max_threads, msg=0, options=["RandomS 42"])
+    if hasattr(pulp, 'PULP_CBC_CMD'):
+        bundled_cbc = pulp.PULP_CBC_CMD(**settings)
+        if bundled_cbc.available():
+            return bundled_cbc
+    return pulp.COIN_CMD(**settings)
+
 def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
+    from pulp import LpMinimize, LpProblem, lpSum
+
     model = LpProblem(name="BFB_reconstruction", sense=LpMinimize)
-    
+
     T = round(max(sum(L) + sum(R) + 1, max(C)))
     # Initialize binary variables for consecutive-sequences
     segment_num = len(C)
@@ -27,8 +45,8 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             for t in range(1, T+1):
                 key1 = f'{i}_{j}_0_{t}'
                 key2 = f'{i}_{j}_1_{t}'
-                cs[key1] = LpVariable(name=f'cs_{key1}', cat="Binary")
-                cs[key2] = LpVariable(name=f'cs_{key2}', cat="Binary")
+                cs[key1] = _add_variable(model, f'cs_{key1}', cat="Binary")
+                cs[key2] = _add_variable(model, f'cs_{key2}', cat="Binary")
     
     # Define the objective function
     objective = 0
@@ -36,11 +54,11 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
     left_fb_error, right_fb_error = [], []
     w1, w2, w3 = 1, 1, 1  # weights for different error types
     for k in range(1, segment_num+1):
-        segment_cn_error.append(LpVariable(name=f'segment_error_{k}', lowBound=0))
+        segment_cn_error.append(_add_variable(model, f'segment_error_{k}', lowBound=0))
         objective += w1 * segment_cn_error[k-1]
-        left_fb_error.append(LpVariable(name=f'left_fb_error_{k}', lowBound=0))
+        left_fb_error.append(_add_variable(model, f'left_fb_error_{k}', lowBound=0))
         objective += w2 * left_fb_error[k-1]
-        right_fb_error.append(LpVariable(name=f'right_fb_error_{k}', lowBound=0))
+        right_fb_error.append(_add_variable(model, f'right_fb_error_{k}', lowBound=0))
         objective += w2 * right_fb_error[k-1]
         # missing foldbacks
         right_fb = 0
@@ -48,7 +66,7 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             for t in range(1, T):
                 right_fb += cs[f'{i}_{k}_0_{t}']
         if R[k-1] == 0:
-            missing_fb = LpVariable(name=f'missing_right_fb_{k}', cat="Binary")
+            missing_fb = _add_variable(model, f'missing_right_fb_{k}', cat="Binary")
             # model += (missing_fb >= right_fb, f'constraint_missing_right_{k}')
             model += (missing_fb <= right_fb, f'constraint_missing_right_{k}_lower_bound')
             model += (T * missing_fb >= right_fb, f'constraint_missing_right_{k}_upper_bound')
@@ -58,7 +76,7 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             for t in range(1, T):
                 left_fb += cs[f'{k}_{j}_1_{t}']
         if L[k-1] == 0:
-            missing_fb = LpVariable(name=f'missing_left_fb_{k}', cat="Binary")
+            missing_fb = _add_variable(model, f'missing_left_fb_{k}', cat="Binary")
             # model += (missing_fb >= left_fb, f'constraint_missing_left_{k}')
             model += (missing_fb <= left_fb, f'constraint_missing_left_{k}_lower_bound')
             model += (T * missing_fb >= left_fb, f'constraint_missing_left_{k}_upper_bound')
@@ -99,10 +117,10 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
                     [f'{i}_{j}_1' for i in range(1, segment_num+1) for j in range(i, segment_num+1)]
     for t1 in range(1, T+1):
         for t2 in range(t1+1, T+1):
-            pa[f'{t1}_{t2}'] = LpVariable(name=f'pa_{t1}_{t2}', cat="Binary")
+            pa[f'{t1}_{t2}'] = _add_variable(model, f'pa_{t1}_{t2}', cat="Binary")
             for s in keys:
-                rc[f'{s}_{t1}_{t2}'] = LpVariable(name=f'rc_{s}_{t1}_{t2}', cat="Binary")
-                sc[f'{s}_{t1}_{t2}'] = LpVariable(name=f'sc_{s}_{t1}_{t2}', cat="Binary")
+                rc[f'{s}_{t1}_{t2}'] = _add_variable(model, f'rc_{s}_{t1}_{t2}', cat="Binary")
+                sc[f'{s}_{t1}_{t2}'] = _add_variable(model, f'sc_{s}_{t1}_{t2}', cat="Binary")
     # Constraint 1: Initial sequence
     if start > 0:
         model += (cs[f'1_{segment_num}_0_1'] == 1, 'constraint_initial_+')
@@ -161,7 +179,7 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             model += (cs[f'{s}_{t2}'] <= total_sc, f'constraint_cs_sc_{s}_{t2}')
     
     # Solve the problem
-    status = model.solve(PULP_CBC_CMD(timeLimit=max_time, threads=max_threads, msg=0, options=["RandomS 42"]))
+    status = model.solve(_cbc_command(max_time, max_threads))
     # print(f'Objective: {model.objective.value()}')
 
     # Get consecutive-sequences added at each time point (all cs = 1)
