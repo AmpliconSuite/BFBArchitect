@@ -17,6 +17,12 @@ plt.rc('font', **font)
 plt.rcParams['pdf.fonttype'] = 42
 
 
+def _chrom_key(chrom):
+    """Compare chromosome names without changing the names in the input files."""
+    name = str(chrom)
+    return name[3:] if name.startswith('chr') else name
+
+
 def parse_segment_coordinates(file_dir, seg_num):
     segments_coordinates = {}
     with open(file_dir, 'r') as f:
@@ -76,7 +82,7 @@ def parse_foldback_coordinate(file_dir, segments, chrom, start, end):
                 bp1, bp2 = int(pos1.split(':')[1][:-1]), int(pos2.split(':')[1][:-1])
                 str1, str2 = pos1[-1], pos2[-1]
                 sv = SV(chr1, bp1, str1, chr2, bp2, str2)
-                if sv.type == 'FBI' and sv.chrom1 == chrom and cn > 0:
+                if sv.type == 'FBI' and _chrom_key(sv.chrom1) == _chrom_key(chrom) and cn > 0:
                     if (start <= sv.bp1 and sv.bp1 <= end) or \
                         (start <= sv.bp2 and sv.bp2 <= end):
                         fb_type = 'left' if sv.strand1 == '-' else 'right'
@@ -124,8 +130,8 @@ def detect_start_end(segments):
     return chrom, start-300000, end + 300000
 
 def extract_fcna(cnr_fn, chrom, start, end):
-    cnr = pd.read_csv(cnr_fn, sep="\t")
-    cnr = cnr[(cnr.chromosome == chrom) & (start <= cnr.start) & (cnr.end <= end)]
+    cnr = pd.read_csv(cnr_fn, sep="\t", dtype={"chromosome": str})
+    cnr = cnr[(cnr.chromosome.map(_chrom_key) == _chrom_key(chrom)) & (start <= cnr.start) & (cnr.end <= end)]
     x, y = [], []
     x_ranges = []
     for row in cnr.itertuples():
@@ -162,9 +168,7 @@ def plot_genes(ax, gene_annotation, chrom, start, end, max_y):
     fp = open(gene_annotation, 'r')
     for line in fp:
         s = line.strip().split('\t')
-        if "chr" not in s[0]:
-            s[0] = "chr" + s[0]
-        if s[0] != chrom:
+        if _chrom_key(s[0]) != _chrom_key(chrom):
             continue
         gene_start, gene_end = int(s[3]), int(s[4])
         if gene_end < start or gene_start > end:
@@ -225,6 +229,23 @@ def find_in_foldback(segment, direction, foldbacks):
         if f['segment_name'] == segment and f['fb_type'] == direction:
             return True
     return False
+
+
+def genomic_plot_span(segments_coordinates, x_ranges):
+    """Use interval boundaries: one segment/bin still has a genomic width.
+
+    Midpoint spread (max(x) - min(x)) is zero for a single segment and
+    collapses foldback arrows and reconstructed-path turn connectors.
+    """
+    starts = [s['start'] for s in segments_coordinates.values()]
+    ends = [s['end'] for s in segments_coordinates.values()]
+    for start, end in x_ranges:
+        starts.append(start)
+        ends.append(end)
+    if not starts:
+        raise ValueError('Cannot determine plot span without genomic intervals')
+    return max(1, max(ends) - min(starts))
+
 
 def plot_structure(ax, score, segments_coordinates, max_y,max_x, foldbacks):
     try:
@@ -290,12 +311,12 @@ def plot_structure(ax, score, segments_coordinates, max_y,max_x, foldbacks):
                 linestyle = '--'
                 color2 = 'red'
                 prop = dict(arrowstyle="-|>,head_width=0.05,head_length=0.15",
-            shrinkA=0,shrinkB=0,color = 'red',alpha = 0.6, linewidth = 0.5)
+                    shrinkA=0,shrinkB=0,color = 'red',alpha = 0.6, linewidth = 0.5)
                 if find_in_foldback(s,direction,foldbacks):
                     linestyle = '-'
                     color2 = 'darkblue'
                     prop = dict(arrowstyle="-|>,head_width=0.05,head_length=0.15",
-            shrinkA=0,shrinkB=0,color = 'darkblue',alpha = 0.6, linewidth = 0.5)
+                        shrinkA=0,shrinkB=0,color = 'darkblue',alpha = 0.6, linewidth = 0.5)
                 direction = 'right'
                 x_point = [segments_coordinates[s]['start'],segments_coordinates[s]['start'] - arrow_length,segments_coordinates[s]['start'] - arrow_length]
                 y_point = [y - y_increase * max_y + (rectangle_width/2) * max_y, y - y_increase * max_y + (rectangle_width/2) * max_y, y + (rectangle_width/2) * max_y]
@@ -305,7 +326,7 @@ def plot_structure(ax, score, segments_coordinates, max_y,max_x, foldbacks):
 
 def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotation=None, deletion=None, pdf=False, multiple=False, centromere=None):
     logger = create_logger('BFBVisualizer', f'{output_prefix}_visualization.log')
-    logger.info(f'Command: python {Path(__file__).resolve()} --graph {graph_file} --cycle {cycle_file} --cnr {cnr_file} --output_prefix {output_prefix}' + (f' --deletion {deletion}' if deletion else '')
+    logger.info(f'Command: python {Path(__file__).resolve()} --graph {graph_file} --cycle {cycle_file} --output_prefix {output_prefix}' + (f' --cnr {cnr_file}' if cnr_file else '') + (f' --deletion {deletion}' if deletion else '')
             + (f' --gene {gene_annotation}' if gene_annotation else '') + (f' --pdf' if pdf else ''))
     all_scores, seg_num = parse_scores(cycle_file, multiple=multiple)
     segments_coordinates = parse_segment_coordinates(graph_file, seg_num)
@@ -321,9 +342,13 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
             y.append(segments_coordinates[s]['cn'])
     else:
         x, x_ranges, y = extract_fcna(cnr_file, chrom, start, end)
+    if not x:
+        raise ValueError(f"No copy-number bins for chromosome {chrom!r} in the plotted region")
+    plot_span = genomic_plot_span(segments_coordinates, x_ranges)
     arm = ''
-    centromere_dict = build_centromere_dict(centromere)
-    if max(x) < centromere_dict.get(chrom, 0):
+    centromere_dict = {_chrom_key(name): position for name, position
+                       in build_centromere_dict(centromere).items()}
+    if max(x) < centromere_dict.get(_chrom_key(chrom), 0):
         arm = 'p'
     else:
         arm = 'q'
@@ -343,8 +368,8 @@ def visualize_BFB(cycle_file, graph_file, cnr_file, output_prefix, gene_annotati
         plot_segments(ax, segments_coordinates)
         if gene_annotation is not None:
             plot_genes(ax, gene_annotation, chrom, start, end, max(y))
-        plot_foldbacks(ax, foldbacks_coordinate, max(y), max(x)-min(x), min(x))
-        plot_structure(ax, scores, segments_coordinates, max(y), max(x)-min(x), foldbacks_coordinate)
+        plot_foldbacks(ax, foldbacks_coordinate, max(y), plot_span, min(x))
+        plot_structure(ax, scores, segments_coordinates, max(y), plot_span, foldbacks_coordinate)
         plt.xlabel('Position', fontsize=16)
         plt.ylabel('Copy number', fontsize=16)
         ylim = ax.get_ylim()
