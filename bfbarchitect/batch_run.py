@@ -96,8 +96,6 @@ def build_parser():
                         help="Minimum mapping quality for SV calling (default: 20)")
     parser.add_argument("--solver", help="ILP solver to use: gurobi, mosek, or cbc (default: autodetect)",
                         default=None)
-    parser.add_argument("--deterministic-cbc", action="store_true",
-                        help="Choose reproducible tied CBC solutions using extra solves (default: off).")
     parser.add_argument("--gene", help="Gene annotation", default=None)
     parser.add_argument("--centromere", help="Path to a centromere BED file (hg38 defaults used if not provided).",
                         default=None)
@@ -137,7 +135,6 @@ def main():
             solver=args.solver,
             centromere_dict=centromere_dict,
             threads=args.threads,
-            deterministic_cbc=args.deterministic_cbc,
         )
         try:
             visualize_BFB(
