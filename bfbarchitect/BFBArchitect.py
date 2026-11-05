@@ -525,7 +525,7 @@ def _resolve_solver(solver, logger, warn=True):
 
 def _solve_bfb_ilp(cn_scaled, lf_scaled, rf_scaled, start_segment, solver, multiple,
                    threads=8, log_file=None, verbose=False, score_fn=None,
-                   min_lp_bound=25, auto_solver=False, warn=True):
+                   min_lp_bound=25, auto_solver=False, warn=True, deterministic_cbc=False):
     logger = logging.getLogger('BFBArchitect')
 
     def _run(cur_solver):
@@ -549,7 +549,7 @@ def _solve_bfb_ilp(cn_scaled, lf_scaled, rf_scaled, start_segment, solver, multi
 
         BFB_string, obj_val = reconstruct_BFB_cbc(
             cn_scaled, lf_scaled, rf_scaled, start_segment,
-            max_threads=threads)
+            max_threads=threads, deterministic=deterministic_cbc)
         return [BFB_string], obj_val
 
     current_solver = solver
@@ -640,7 +640,7 @@ def _map_reverse_polarity_string(BFB_string, segment_count):
 
 def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multiple=False,
                     verbose=False, log_file=None, silent=False, threads=8, track_solve=False,
-                    min_lp_bound=25, reverse_polarity=False):
+                    min_lp_bound=25, reverse_polarity=False, deterministic_cbc=False):
     """
     Reconstruct BFB sequences from pre-segmented copy-number and foldback data.
     """
@@ -693,7 +693,7 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
             solver=solver, multiple=multiple, threads=threads,
             log_file=log_file, verbose=_verbose, score_fn=_score_fn,
             min_lp_bound=min_lp_bound, auto_solver=auto_solver,
-            warn=not silent)
+            warn=not silent, deterministic_cbc=deterministic_cbc)
         logger.info(f'ILP objective value: {obj_val}')
         if reverse_polarity:
             BFB_strings = [
@@ -707,7 +707,7 @@ def reconstruct_bfb(new_segments, cn, lf, rf, centromere_pos, solver=None, multi
         if silent:
             logger.setLevel(old_level)
 
-def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=True, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25, reverse_polarity=False):
+def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation=False, deletion=True, coverage=None, multiple=False, no_expansion=False, min_sv_cn=0.75, min_mapq=20, solver=None, centromere_dict=None, verbose=False, threads=8, min_lp_bound=25, reverse_polarity=False, deterministic_cbc=False):
     if centromere_dict is None:
         centromere_dict = CHR_CENTRO
     log_file = f'{output_prefix}.log'
@@ -719,7 +719,8 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
     logger.info(f'Command: python {Path(__file__).resolve()} --bam {bam_fn} --cns {cns_fn} --region {region} --output_prefix {output_prefix}' +
                  (' --segmentation' if segmentation else '') + (' --no-deletion' if not deletion else '') + (' --coverage ' + str(coverage) if coverage != None else '') + 
                  (' --multiple' if multiple else '') + (' --no_expansion' if no_expansion else '') + (f' --min_sv_cn {min_sv_cn}' if min_sv_cn != 0.75 else '') + 
-                 (f' --min_mapq {min_mapq}' if min_mapq != 20 else '') + (' --reverse_polarity' if reverse_polarity else ''))
+                 (f' --min_mapq {min_mapq}' if min_mapq != 20 else '') + (' --reverse_polarity' if reverse_polarity else '') +
+                 (' --deterministic-cbc' if deterministic_cbc else ''))
     normal_cov = get_normal_coverage(cns_fn, bam_fn) if coverage == None else coverage
     logger.info(f'Normal coverage: {normal_cov}')
     if min_sv_cn * normal_cov / 2 < 3:
@@ -819,7 +820,7 @@ def reconstruct_bfb_from_bam(bam_fn, cns_fn, region, output_prefix, segmentation
         cn_scaled, lf_scaled, rf_scaled, start_segment,
         solver=solver, multiple=multiple, threads=threads,
         log_file=log_file, verbose=verbose, min_lp_bound=min_lp_bound,
-        auto_solver=auto_solver)
+        auto_solver=auto_solver, deterministic_cbc=deterministic_cbc)
     logger.info(f'ILP objective value: {obj_val}')
     if reverse_polarity:
         BFB_strings = [
@@ -852,7 +853,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                                track_solve=False, min_lp_bound=25,
                                max_graph_segments=100,
                                max_whole_graph_segments=None,
-                               deletion=True, reverse_polarity=False):
+                               deletion=True, reverse_polarity=False, deterministic_cbc=False):
     """
     Reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -886,7 +887,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                 centromere_dict.get(primary_chrom, 0),
                 solver=solver, multiple=multiple, verbose=verbose, log_file=log_file, silent=silent,
                 threads=threads, track_solve=track_solve, min_lp_bound=min_lp_bound,
-                reverse_polarity=reverse_polarity)
+                reverse_polarity=reverse_polarity, deterministic_cbc=deterministic_cbc)
             results.append({
                 'region': region,
                 'new_segments': new_segments,
@@ -928,7 +929,7 @@ def reconstruct_bfb_from_graph(graph_fn, centromere_dict=None, solver=None,
                 centromere_dict.get(chrom, 0),
                 solver=solver, multiple=multiple, verbose=verbose, log_file=log_file, silent=silent,
                 threads=threads, track_solve=track_solve, min_lp_bound=min_lp_bound,
-                reverse_polarity=reverse_polarity)
+                reverse_polarity=reverse_polarity, deterministic_cbc=deterministic_cbc)
             results.append({
                 'region': cur_region,
                 'new_segments': new_segments,
@@ -945,7 +946,7 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
                        whole_graph=False, region=None, gene=None,
                        centromere_dict=None, verbose=False, threads=8, min_lp_bound=25,
                        max_graph_segments=100, max_whole_graph_segments=None,
-                       deletion=True, reverse_polarity=False):
+                       deletion=True, reverse_polarity=False, deterministic_cbc=False):
     """
     CLI entry point to reconstruct BFB sequences from an AA-format _graph.txt file.
     """
@@ -963,7 +964,8 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
         _add_stream_handler(logger)
     logger.info(f'Command: python {Path(__file__).resolve()} --graph {graph_fn} --output_prefix {output_prefix}' +
                  (' --multiple' if multiple else '') + (' --whole_graph' if whole_graph else '') + (f' --region {region[0]}:{region[1]}-{region[2]}' if region else '') + 
-                 (f' --solver {solver}' if solver else ''))
+                 (f' --solver {solver}' if solver else '') +
+                 (' --deterministic-cbc' if deterministic_cbc else ''))
     start_time = time.time()
     results = reconstruct_bfb_from_graph(
         graph_fn, centromere_dict=centromere_dict, solver=solver,
@@ -971,7 +973,7 @@ def run_bfb_from_graph(graph_fn, output_prefix, multiple=False, solver=None,
         verbose=verbose, log_file=log_file, threads=threads, min_lp_bound=min_lp_bound,
         max_graph_segments=max_graph_segments,
         deletion=deletion,
-        reverse_polarity=reverse_polarity
+        reverse_polarity=reverse_polarity, deterministic_cbc=deterministic_cbc
     )
     if not results:
         return
@@ -1028,6 +1030,8 @@ def main():
     parser.add_argument("--multiple", help="Reconstruct multiple BFB candidates", action='store_true')
     parser.add_argument("--reverse_polarity", help="Run the opposite of the computed BFB polarity.", action='store_true')
     parser.add_argument("--solver", help="ILP solver to use. Options: gurobi, mosek, and cbc (default: autodetect).", default=None)
+    parser.add_argument("--deterministic-cbc", action="store_true",
+                        help="Choose reproducible tied CBC solutions using extra solves (default: off).")
     parser.add_argument("-t", "--threads", type=int, default=8, help="Number of threads for the ILP solver (default: 8).")
     parser.add_argument("--centromere", help="Path to a BED file of centromere regions.", default=None)
     parser.add_argument("--verbose", help="Print all log messages to stdout in addition to the log file.", action='store_true')
@@ -1055,9 +1059,9 @@ def main():
                            min_lp_bound=args.min_lp_bound,
                            max_graph_segments=args.max_graph_segments,
                            deletion=args.deletion,
-                           reverse_polarity=args.reverse_polarity)
+                           reverse_polarity=args.reverse_polarity, deterministic_cbc=args.deterministic_cbc)
     elif args.bam and args.cns and args.region:
-        reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict, verbose=args.verbose, threads=args.threads, min_lp_bound=args.min_lp_bound, reverse_polarity=args.reverse_polarity)
+        reconstruct_bfb_from_bam(args.bam, args.cns, args.region, args.output_prefix, args.segmentation, args.deletion, args.coverage, args.multiple, args.no_expansion, args.min_sv_cn, args.min_mapq, args.solver, centromere_dict, verbose=args.verbose, threads=args.threads, min_lp_bound=args.min_lp_bound, reverse_polarity=args.reverse_polarity, deterministic_cbc=args.deterministic_cbc)
     else:
         parser.error("Provide either --graph or all of --bam, --cns, --region.")
 
