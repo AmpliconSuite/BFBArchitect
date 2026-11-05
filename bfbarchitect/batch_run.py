@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 import os
 
-try:
+if __package__:
     from bfbarchitect.datatypes import SV, chrom_sort_key, build_centromere_dict
     from bfbarchitect.BFBArchitect import reconstruct_bfb_from_bam
     from bfbarchitect.BFBVisualizer import visualize_BFB
-except:
+else:  # run directly as a script from a source checkout
     from datatypes import SV, chrom_sort_key, build_centromere_dict
     from BFBArchitect import reconstruct_bfb_from_bam
     from BFBVisualizer import visualize_BFB
@@ -96,6 +96,8 @@ def build_parser():
                         help="Minimum mapping quality for SV calling (default: 20)")
     parser.add_argument("--solver", help="ILP solver to use: gurobi, mosek, or cbc (default: autodetect)",
                         default=None)
+    parser.add_argument("--deterministic-cbc", action="store_true",
+                        help="Choose reproducible tied CBC solutions using extra solves (default: off).")
     parser.add_argument("--gene", help="Gene annotation", default=None)
     parser.add_argument("--centromere", help="Path to a centromere BED file (hg38 defaults used if not provided).",
                         default=None)
@@ -135,6 +137,7 @@ def main():
             solver=args.solver,
             centromere_dict=centromere_dict,
             threads=args.threads,
+            deterministic_cbc=args.deterministic_cbc,
         )
         try:
             visualize_BFB(

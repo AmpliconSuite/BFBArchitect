@@ -73,6 +73,15 @@ MOSEK remains available as the second automatic choice. Its default license loca
 Automatic selection uses Gurobi, then MOSEK, then the open-source CBC solver (slower, no solution pool). If an automatically selected commercial solver later fails because its license, network, or remote service is unavailable, BFBArchitect logs the failure and retries the next available solver. The solver can also be set explicitly via `--solver gurobi|mosek|cbc`; explicit requests are strict and do not silently switch solvers.
    
 
+### CBC reproducibility
+
+CBC returns one sequence by default, without extra tie-break solves. Different CBC builds may choose different equally optimal strings, and their downstream scores may differ.
+
+Use `--deterministic-cbc` with `BFBArchitect.py` or `BFBArchitect-batch` when reproducible strings and scores are required. In Python, pass `deterministic_cbc=True` to the reconstruction functions, or `deterministic=True` to `reconstruct_BFB_cbc`. This opt-in mode preserves the primary ILP objective within numerical tolerance, then lexicographically minimizes each consecutive block's `(start segment, end segment, direction)` in time order. It does not minimize the downstream score.
+
+Canonical selection can take substantially longer. All extra solves share the CBC time budget (900 seconds by default). If proof of optimality or the tie-break cannot finish, a warning is logged and the last feasible solution is returned without a reproducibility guarantee. Gurobi and MOSEK behavior is unchanged.
+
+
 ## Running
 Before running BFBArchitect, genome-wide copy number (CN) calls must be generated from the aligned long-read data by running the follow script:
 ```
@@ -82,6 +91,7 @@ This command uses the packaged hg38 CNVkit reference by default. To use a differ
 This will create a file called ```[input].cns```, which is a required argument in BFBArchitect. 
 
 Then run BFBArchitect to reconstruct potential BFB sequences for any genomic region ```chrom:start-end``` with copy number amplification. (The amplicon region can be detected by standard pipelines like [CoRAL](https://github.com/AmpliconSuite/CoRAL).)
+
 ### Usage
 ```
 BFBArchitect.py --bam <input.bam> --cns <input.cns> --region <chrom:start-end> --output_prefix <dir/output_prefix> [--segmentation] [--no-deletion] [--coverage <sequencing coverage>]

@@ -1,6 +1,6 @@
 pandas>=2.0.3
 pysam>=0.23.3
 matplotlib>=3.7.5
-PuLP>=3.0.0
+PuLP[cbc]>=2.8.0
 CNVkit>=0.9.10
 gurobipy

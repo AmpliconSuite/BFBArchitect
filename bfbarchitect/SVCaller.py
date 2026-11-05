@@ -6,10 +6,10 @@ import argparse
 
 LOGGER = logging.getLogger('BFBArchitect')
 
-try:
+if __package__:
     from bfbarchitect.datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
     from bfbarchitect.utils import get_normal_coverage, get_coverage_and_rc
-except:
+else:  # run directly as a script from a source checkout
     from datatypes import CigarAlignment, SV, REVERSE_STRAND, chrom_sort_key
     from utils import get_normal_coverage, get_coverage_and_rc
 

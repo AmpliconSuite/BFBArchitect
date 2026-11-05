@@ -1,4 +1,3 @@
-from pulp import LpMinimize, LpProblem, LpStatus, lpSum, LpVariable, PULP_CBC_CMD
 import logging
 import sys
 import time as _time
@@ -15,9 +14,92 @@ def _build_bfb_string(consecutive_sequences):
             BFB_string += [-x for x in range(j, i - 1, -1)]
     return BFB_string
 
-def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
+def _add_variable(model, name, **kwargs):
+    """Create an ILP variable. PuLP 4 creates variables through the model; older PuLP constructs them directly."""
+    if hasattr(model, 'add_variable'):
+        return model.add_variable(name, **kwargs)
+    from pulp import LpVariable
+    return LpVariable(name=name, **kwargs)
+
+def _cbc_command(max_time, max_threads):
+    """Return the CBC command. PuLP 4 removed PULP_CBC_CMD, and Conda's older PuLP has no bundled CBC to run."""
+    import pulp
+    settings = dict(timeLimit=max_time, threads=max_threads, msg=0, options=["RandomS 42"])
+    if hasattr(pulp, 'PULP_CBC_CMD'):
+        bundled_cbc = pulp.PULP_CBC_CMD(**settings)
+        if bundled_cbc.available():
+            return bundled_cbc
+    return pulp.COIN_CMD(**settings)
+
+def _solve_cbc(model, max_time, max_threads, exact=False):
+    command = _cbc_command(max_time, max_threads)
+    if exact:
+        # New CBC builds can label even zero-gap solves GapLimit with a
+        # positive absolute tolerance. Require proof before fixing a prefix.
+        command.optionsDict.update(gapRel=0, gapAbs=0)
+    return model.solve(command)
+
+
+def _cbc_has_solution(model, result):
+    """PuLP 4 returns solve statistics; PuLP 2/3 store solution status on the model."""
+    if hasattr(result, 'has_solution'):
+        return result.has_solution
+    return model.sol_status in (1, 2)  # optimal or integer feasible
+
+
+def _cbc_is_optimal(model, result):
+    if hasattr(result, 'has_solution'):
+        return result.has_solution and result.status.name == 'Optimal'
+    # Old PuLP can report status=Optimal for a time-limited integer incumbent.
+    return result == 1 and model.sol_status == 1
+
+
+def _cbc_sequences(cs):
+    return sorted((tuple(map(int, key.split('_'))) for key, var in cs.items()
+                   if var.value() is not None and var.value() > 0.5), key=lambda x: x[3])
+
+
+def _canonical_cbc_sequences(model, cs, objective, objective_value, deadline, max_threads):
+    """Lexicographically minimize (i, j, direction) at successive time points.
+
+    Each prefix is proved optimal before it is fixed. Auxiliary ILP variables
+    need not be unique. All solves share the original solve time budget.
+    """
+    from pulp import lpSum
+
+    incumbent = _cbc_sequences(cs)
+    model += objective <= objective_value + 1e-7, 'canonical_primary_objective'
+    choices = sorted({tuple(map(int, key.split('_')[:3])) for key in cs})
+    ranks = {choice: rank for rank, choice in enumerate(choices)}
+    times = sorted({int(key.rsplit('_', 1)[1]) for key in cs})
+    for t in times[1:]:  # time 1 is fixed by the initial-sequence constraint
+        remaining = None if deadline is None else deadline - _time.monotonic()
+        if remaining is not None and remaining <= 0:
+            LOGGER.warning('CBC time budget exhausted before deterministic tie-break completed; returning the last feasible solution.')
+            break
+        rank_objective = lpSum(ranks[tuple(map(int, key.split('_')[:3]))] * var
+                               for key, var in cs.items() if int(key.rsplit('_', 1)[1]) == t)
+        model.setObjective(rank_objective)
+        result = _solve_cbc(model, remaining, max_threads, exact=True)
+        if not _cbc_is_optimal(model, result):
+            LOGGER.warning('CBC deterministic tie-break did not finish; returning the last feasible solution.')
+            break
+        incumbent = _cbc_sequences(cs)
+        rank = round(rank_objective.value())
+        model += rank_objective == rank, f'canonical_prefix_{t}'
+    return incumbent
+
+
+def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8, deterministic=False):
+    """Reconstruct one CBC solution; optionally canonicalize optimal ties.
+
+    Set deterministic=True for canonical selection within max_time.
+    A time-limited solve can return an incumbent without a canonical guarantee.
+    """
+    from pulp import LpMinimize, LpProblem, lpSum
+
     model = LpProblem(name="BFB_reconstruction", sense=LpMinimize)
-    
+
     T = round(max(sum(L) + sum(R) + 1, max(C)))
     # Initialize binary variables for consecutive-sequences
     segment_num = len(C)
@@ -27,8 +109,8 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             for t in range(1, T+1):
                 key1 = f'{i}_{j}_0_{t}'
                 key2 = f'{i}_{j}_1_{t}'
-                cs[key1] = LpVariable(name=f'cs_{key1}', cat="Binary")
-                cs[key2] = LpVariable(name=f'cs_{key2}', cat="Binary")
+                cs[key1] = _add_variable(model, f'cs_{key1}', cat="Binary")
+                cs[key2] = _add_variable(model, f'cs_{key2}', cat="Binary")
     
     # Define the objective function
     objective = 0
@@ -36,11 +118,11 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
     left_fb_error, right_fb_error = [], []
     w1, w2, w3 = 1, 1, 1  # weights for different error types
     for k in range(1, segment_num+1):
-        segment_cn_error.append(LpVariable(name=f'segment_error_{k}', lowBound=0))
+        segment_cn_error.append(_add_variable(model, f'segment_error_{k}', lowBound=0))
         objective += w1 * segment_cn_error[k-1]
-        left_fb_error.append(LpVariable(name=f'left_fb_error_{k}', lowBound=0))
+        left_fb_error.append(_add_variable(model, f'left_fb_error_{k}', lowBound=0))
         objective += w2 * left_fb_error[k-1]
-        right_fb_error.append(LpVariable(name=f'right_fb_error_{k}', lowBound=0))
+        right_fb_error.append(_add_variable(model, f'right_fb_error_{k}', lowBound=0))
         objective += w2 * right_fb_error[k-1]
         # missing foldbacks
         right_fb = 0
@@ -48,7 +130,7 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             for t in range(1, T):
                 right_fb += cs[f'{i}_{k}_0_{t}']
         if R[k-1] == 0:
-            missing_fb = LpVariable(name=f'missing_right_fb_{k}', cat="Binary")
+            missing_fb = _add_variable(model, f'missing_right_fb_{k}', cat="Binary")
             # model += (missing_fb >= right_fb, f'constraint_missing_right_{k}')
             model += (missing_fb <= right_fb, f'constraint_missing_right_{k}_lower_bound')
             model += (T * missing_fb >= right_fb, f'constraint_missing_right_{k}_upper_bound')
@@ -58,7 +140,7 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             for t in range(1, T):
                 left_fb += cs[f'{k}_{j}_1_{t}']
         if L[k-1] == 0:
-            missing_fb = LpVariable(name=f'missing_left_fb_{k}', cat="Binary")
+            missing_fb = _add_variable(model, f'missing_left_fb_{k}', cat="Binary")
             # model += (missing_fb >= left_fb, f'constraint_missing_left_{k}')
             model += (missing_fb <= left_fb, f'constraint_missing_left_{k}_lower_bound')
             model += (T * missing_fb >= left_fb, f'constraint_missing_left_{k}_upper_bound')
@@ -99,10 +181,10 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
                     [f'{i}_{j}_1' for i in range(1, segment_num+1) for j in range(i, segment_num+1)]
     for t1 in range(1, T+1):
         for t2 in range(t1+1, T+1):
-            pa[f'{t1}_{t2}'] = LpVariable(name=f'pa_{t1}_{t2}', cat="Binary")
+            pa[f'{t1}_{t2}'] = _add_variable(model, f'pa_{t1}_{t2}', cat="Binary")
             for s in keys:
-                rc[f'{s}_{t1}_{t2}'] = LpVariable(name=f'rc_{s}_{t1}_{t2}', cat="Binary")
-                sc[f'{s}_{t1}_{t2}'] = LpVariable(name=f'sc_{s}_{t1}_{t2}', cat="Binary")
+                rc[f'{s}_{t1}_{t2}'] = _add_variable(model, f'rc_{s}_{t1}_{t2}', cat="Binary")
+                sc[f'{s}_{t1}_{t2}'] = _add_variable(model, f'sc_{s}_{t1}_{t2}', cat="Binary")
     # Constraint 1: Initial sequence
     if start > 0:
         model += (cs[f'1_{segment_num}_0_1'] == 1, 'constraint_initial_+')
@@ -160,29 +242,20 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
             total_sc = lpSum([sc[f'{s}_{t1}_{t2}'] for t1 in range(1, t2)])
             model += (cs[f'{s}_{t2}'] <= total_sc, f'constraint_cs_sc_{s}_{t2}')
     
-    # Solve the problem
-    status = model.solve(PULP_CBC_CMD(timeLimit=max_time, threads=max_threads, msg=0, options=["RandomS 42"]))
-    # print(f'Objective: {model.objective.value()}')
-
-    # Get consecutive-sequences added at each time point (all cs = 1)
-    consecutive_sequences = []
-    for var in model.variables():
-        if var.value() > 0 and var.name.startswith('cs_'):
-            # print(var)
-            i, j, d, t = var.name[3:].split('_')
-            consecutive_sequences.append((int(i), int(j), int(d), int(t)))
-        # elif 'error' in var.name:
-        #     print(var, var.value())
-    consecutive_sequences = sorted(consecutive_sequences, key=lambda x: x[3])
-    # print(consecutive_sequences)
-    BFB_string = []
-    for (i, j, d, _) in consecutive_sequences:
-        if d == 0:
-            segment = [x for x in range(i, j+1)]
+    # Keep the primary objective: the canonical solves replace model.objective.
+    deadline = None if max_time is None else _time.monotonic() + max_time
+    result = _solve_cbc(model, max_time, max_threads, exact=deterministic)
+    if not _cbc_has_solution(model, result):
+        raise RuntimeError('CBC did not return a feasible integer BFB solution')
+    objective_value = objective.value()
+    consecutive_sequences = _cbc_sequences(cs)
+    if deterministic:
+        if _cbc_is_optimal(model, result):
+            consecutive_sequences = _canonical_cbc_sequences(
+                model, cs, objective, objective_value, deadline, max_threads)
         else:
-            segment = [-x for x in range(j, i-1, -1)]
-        BFB_string += segment
-    return BFB_string, model.objective.value()
+            LOGGER.warning('CBC did not prove the primary objective optimal; skipping deterministic tie-break.')
+    return _build_bfb_string(consecutive_sequences), objective_value
 
 def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50,
                             log_file=None, verbose=False, score_fn=None, min_lp_bound=None):
