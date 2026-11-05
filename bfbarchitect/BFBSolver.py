@@ -24,21 +24,14 @@ def _add_variable(model, name, **kwargs):
 def _cbc_command(max_time, max_threads):
     """Return the CBC command. PuLP 4 removed PULP_CBC_CMD, and Conda's older PuLP has no bundled CBC to run."""
     import pulp
-    settings = dict(timeLimit=max_time, threads=max_threads, msg=0, options=["RandomS 42"])
+    # A positive absolute gap can label zero-gap solves GapLimit in newer CBC.
+    settings = dict(timeLimit=max_time, threads=max_threads, msg=0,
+                    gapRel=0, gapAbs=0, options=["RandomS 42"])
     if hasattr(pulp, 'PULP_CBC_CMD'):
         bundled_cbc = pulp.PULP_CBC_CMD(**settings)
         if bundled_cbc.available():
             return bundled_cbc
     return pulp.COIN_CMD(**settings)
-
-def _solve_cbc(model, max_time, max_threads, exact=False):
-    command = _cbc_command(max_time, max_threads)
-    if exact:
-        # New CBC builds can label even zero-gap solves GapLimit with a
-        # positive absolute tolerance. Require proof before fixing a prefix.
-        command.optionsDict.update(gapRel=0, gapAbs=0)
-    return model.solve(command)
-
 
 def _cbc_has_solution(model, result):
     """PuLP 4 returns solve statistics; PuLP 2/3 store solution status on the model."""
@@ -80,7 +73,7 @@ def _canonical_cbc_sequences(model, cs, objective, objective_value, deadline, ma
         rank_objective = lpSum(ranks[tuple(map(int, key.split('_')[:3]))] * var
                                for key, var in cs.items() if int(key.rsplit('_', 1)[1]) == t)
         model.setObjective(rank_objective)
-        result = _solve_cbc(model, remaining, max_threads, exact=True)
+        result = model.solve(_cbc_command(remaining, max_threads))
         if not _cbc_is_optimal(model, result):
             LOGGER.warning('CBC deterministic tie-break did not finish; returning the last feasible solution.')
             break
@@ -90,10 +83,9 @@ def _canonical_cbc_sequences(model, cs, objective, objective_value, deadline, ma
     return incumbent
 
 
-def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8, deterministic=False):
-    """Reconstruct one CBC solution; optionally canonicalize optimal ties.
+def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
+    """Reconstruct a canonical optimal CBC sequence within max_time.
 
-    Set deterministic=True for canonical selection within max_time.
     A time-limited solve can return an incumbent without a canonical guarantee.
     """
     from pulp import LpMinimize, LpProblem, lpSum
@@ -244,17 +236,16 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8, determinist
     
     # Keep the primary objective: the canonical solves replace model.objective.
     deadline = None if max_time is None else _time.monotonic() + max_time
-    result = _solve_cbc(model, max_time, max_threads, exact=deterministic)
+    result = model.solve(_cbc_command(max_time, max_threads))
     if not _cbc_has_solution(model, result):
         raise RuntimeError('CBC did not return a feasible integer BFB solution')
     objective_value = objective.value()
     consecutive_sequences = _cbc_sequences(cs)
-    if deterministic:
-        if _cbc_is_optimal(model, result):
-            consecutive_sequences = _canonical_cbc_sequences(
-                model, cs, objective, objective_value, deadline, max_threads)
-        else:
-            LOGGER.warning('CBC did not prove the primary objective optimal; skipping deterministic tie-break.')
+    if _cbc_is_optimal(model, result):
+        consecutive_sequences = _canonical_cbc_sequences(
+            model, cs, objective, objective_value, deadline, max_threads)
+    else:
+        LOGGER.warning('CBC did not prove the primary objective optimal; skipping deterministic tie-break.')
     return _build_bfb_string(consecutive_sequences), objective_value
 
 def reconstruct_BFB_gurobi(C, L, R, start, max_time=900, max_threads=8, pool_solutions=50,

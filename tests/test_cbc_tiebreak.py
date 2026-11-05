@@ -1,3 +1,5 @@
+import contextlib
+import io
 import logging
 import sys
 import types
@@ -8,73 +10,49 @@ import pulp
 import bfbarchitect.BFBSolver as solver
 import bfbarchitect.BFBArchitect as bfb
 import bfbarchitect.batch_run as batch
-from bfbarchitect.datatypes import SV
 from bfbarchitect.BFBArchitect import compute_bfb_scores
 
 
 class CbcTieBreakTests(unittest.TestCase):
     cn, lf, rf = [2, 3], [0, 0], [0, 1]
 
-    def test_default_returns_one_solution_without_extra_solves(self):
-        original_solve = pulp.LpProblem.solve
-        calls = []
-
-        def solve_once(model, command):
-            calls.append(command)
-            return original_solve(model, command)
-
-        with patch.object(pulp.LpProblem, 'solve', new=solve_once), \
-                patch.object(solver, '_canonical_cbc_sequences') as canonical:
+    def test_default_canonicalizes_tied_solutions(self):
+        with patch.object(solver, '_canonical_cbc_sequences',
+                          wraps=solver._canonical_cbc_sequences) as canonical:
             sequence, objective = solver.reconstruct_BFB_cbc(
                 self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1)
-        self.assertEqual(len(calls), 1)
-        canonical.assert_not_called()
-        self.assertTrue(solver.check_BFB_string(sequence))
+        canonical.assert_called_once()
+        self.assertEqual(sequence, [1, 2, -2, -1, 1, 2])
         self.assertAlmostEqual(objective, 3.0)
 
-    def test_public_reconstruction_can_opt_in(self):
+    def test_public_reconstruction_is_deterministic_by_default(self):
         segments = [('chr1', 1, 100, 3, 0, 0), ('chr1', 101, 200, 4, 0, 0)]
         strings, scores, multiplicity = bfb.reconstruct_bfb(
-            segments, self.cn, self.lf, self.rf, 0, solver='cbc', silent=True,
-            threads=1, deterministic_cbc=True)
+            segments, self.cn, self.lf, self.rf, 0, solver='cbc', silent=True, threads=1)
         self.assertEqual(strings, [[1, 2, -2, -1, 1, 2]])
         self.assertAlmostEqual(scores[0], 10 / 3)
         self.assertEqual(multiplicity, 1)
 
-    def test_cli_graph_and_bam_modes_forward_opt_in(self):
-        for mode in ('graph', 'bam'):
-            for enabled in (False, True):
-                args = ['BFBArchitect.py', '--output_prefix', 'unused', '--solver', 'cbc']
-                args += ['--graph', 'unused'] if mode == 'graph' else [
-                    '--bam', 'unused', '--cns', 'unused', '--region', 'chr1:1-200']
-                if enabled:
-                    args.append('--deterministic-cbc')
-                target = 'run_bfb_from_graph' if mode == 'graph' else 'reconstruct_bfb_from_bam'
-                with self.subTest(mode=mode, enabled=enabled), \
-                        patch.object(sys, 'argv', args), patch.object(bfb, target) as run:
-                    bfb.main()
-                self.assertEqual(run.call_args.kwargs['deterministic_cbc'], enabled)
+    def test_cli_has_no_tiebreak_switch(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['BFBArchitect.py', '--help']), \
+                contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as result:
+            bfb.main()
+        self.assertEqual(result.exception.code, 0)
+        self.assertNotIn('--deterministic-cbc', output.getvalue())
 
-    def test_batch_cli_forwards_opt_in(self):
-        sv = SV('chr1', 10, '+', 'chr1', 20, '+')
-        args = ['BFBArchitect-batch', '--directory', 'unused', '--bam', 'unused',
-                '--cns', 'unused', '--output_prefix', 'unused', '--deterministic-cbc']
-        with patch.object(sys, 'argv', args), \
-                patch.object(batch, 'find_foldbacks', return_value=[sv]), \
-                patch.object(batch, 'reconstruct_bfb_from_bam') as run, \
-                patch.object(batch, 'visualize_BFB'):
-            batch.main()
-        self.assertTrue(run.call_args.kwargs['deterministic_cbc'])
+    def test_batch_cli_has_no_tiebreak_switch(self):
+        self.assertNotIn('--deterministic-cbc', batch.build_parser().format_help())
 
-    def test_automatic_fallback_to_cbc_preserves_opt_in(self):
+    def test_automatic_fallback_to_cbc_is_deterministic(self):
         with patch.object(bfb, 'reconstruct_BFB_gurobi',
                           side_effect=RuntimeError('Gurobi license unavailable')), \
-                patch.object(bfb, '_detect_non_gurobi_solver', return_value='cbc'), \
-                patch.object(bfb, 'reconstruct_BFB_cbc', return_value=([1, -1], 0)) as cbc:
-            bfb._solve_bfb_ilp(self.cn, self.lf, self.rf, 1, solver='gurobi',
-                               multiple=False, auto_solver=True, warn=False,
-                               deterministic_cbc=True)
-        self.assertTrue(cbc.call_args.kwargs['deterministic'])
+                patch.object(bfb, '_detect_non_gurobi_solver', return_value='cbc'):
+            strings, objective = bfb._solve_bfb_ilp(
+                self.cn, self.lf, self.rf, 1, solver='gurobi', multiple=False,
+                auto_solver=True, warn=False, threads=1)
+        self.assertEqual(strings, [[1, 2, -2, -1, 1, 2]])
+        self.assertAlmostEqual(objective, 3.0)
 
     def test_tied_solutions_are_identical_across_seeds_and_threads(self):
         command = solver._cbc_command
@@ -88,7 +66,7 @@ class CbcTieBreakTests(unittest.TestCase):
                 with self.subTest(start=start, seed=seed, threads=threads), \
                         patch.object(solver, '_cbc_command', side_effect=seeded_command):
                     sequence, objective = solver.reconstruct_BFB_cbc(
-                        self.cn, self.lf, self.rf, start, max_time=30, max_threads=threads, deterministic=True)
+                        self.cn, self.lf, self.rf, start, max_time=30, max_threads=threads)
                     self.assertAlmostEqual(objective, 3.0 if start == 1 else 2.0)
                     self.assertTrue(solver.check_BFB_string(sequence))
                     score = compute_bfb_scores(self.cn, self.lf, self.rf, [sequence], 1,
@@ -100,14 +78,21 @@ class CbcTieBreakTests(unittest.TestCase):
         self.assertAlmostEqual(expected[1][1][0], 10 / 3)
 
     def test_primary_objective_is_preserved(self):
+        original_solve = pulp.LpProblem.solve
         for start in (1, -1):
-            with self.subTest(start=start):
-                _, legacy = solver.reconstruct_BFB_cbc(
-                    self.cn, self.lf, self.rf, start, max_time=30, max_threads=1,
-                    deterministic=False)
-                _, canonical = solver.reconstruct_BFB_cbc(
-                    self.cn, self.lf, self.rf, start, max_time=30, max_threads=1, deterministic=True)
-                self.assertAlmostEqual(canonical, legacy)
+            primary = []
+
+            def record_primary(model, command):
+                result = original_solve(model, command)
+                if not primary:
+                    primary.append(model.objective.value())
+                return result
+
+            with self.subTest(start=start), patch.object(pulp.LpProblem, 'solve', new=record_primary):
+                _, objective = solver.reconstruct_BFB_cbc(
+                    self.cn, self.lf, self.rf, start, max_time=30, max_threads=1)
+                self.assertAlmostEqual(objective, primary[0])
+                self.assertAlmostEqual(objective, 3.0 if start == 1 else 2.0)
 
     def test_interrupted_tiebreak_keeps_the_original_feasible_sequence(self):
         original_solve = pulp.LpProblem.solve
@@ -128,7 +113,7 @@ class CbcTieBreakTests(unittest.TestCase):
         with patch.object(pulp.LpProblem, 'solve', new=interrupted), \
                 self.assertLogs('BFBArchitect', level='WARNING'):
             sequence, objective = solver.reconstruct_BFB_cbc(
-                self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1, deterministic=True)
+                self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1)
         self.assertEqual(sequence, snapshots[0])
         self.assertAlmostEqual(objective, 3.0)
 
@@ -144,7 +129,7 @@ class CbcTieBreakTests(unittest.TestCase):
                 patch.object(solver, '_canonical_cbc_sequences') as canonical, \
                 self.assertLogs('BFBArchitect', level='WARNING'):
             sequence, _ = solver.reconstruct_BFB_cbc(
-                self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1, deterministic=True)
+                self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1)
         canonical.assert_not_called()
         self.assertTrue(solver.check_BFB_string(sequence))
 
@@ -161,7 +146,7 @@ class CbcTieBreakTests(unittest.TestCase):
                 patch.object(solver._time, 'monotonic', side_effect=[0, 31]), \
                 self.assertLogs('BFBArchitect', level='WARNING'):
             sequence, objective = solver.reconstruct_BFB_cbc(
-                self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1, deterministic=True)
+                self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1)
         self.assertEqual(len(snapshots), 1)
         self.assertTrue(solver.check_BFB_string(sequence))
         self.assertAlmostEqual(objective, 3.0)

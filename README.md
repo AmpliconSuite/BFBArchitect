@@ -75,11 +75,9 @@ Automatic selection uses Gurobi, then MOSEK, then the open-source CBC solver (sl
 
 ### CBC reproducibility
 
-CBC returns one sequence by default, without extra tie-break solves. Different CBC builds may choose different equally optimal strings, and their downstream scores may differ.
+CBC automatically selects a canonical sequence when several solutions tie on the primary ILP objective. It preserves that objective within numerical tolerance, then lexicographically minimizes each consecutive block's `(start segment, end segment, direction)` in time order. This makes the returned string and downstream score reproducible across CBC builds when all stages finish. Canonical selection does not minimize the downstream score.
 
-Use `--deterministic-cbc` with `BFBArchitect.py` or `BFBArchitect-batch` when reproducible strings and scores are required. In Python, pass `deterministic_cbc=True` to the reconstruction functions, or `deterministic=True` to `reconstruct_BFB_cbc`. This opt-in mode preserves the primary ILP objective within numerical tolerance, then lexicographically minimizes each consecutive block's `(start segment, end segment, direction)` in time order. It does not minimize the downstream score.
-
-Canonical selection can take substantially longer. All extra solves share the CBC time budget (900 seconds by default). If proof of optimality or the tie-break cannot finish, a warning is logged and the last feasible solution is returned without a reproducibility guarantee. Gurobi and MOSEK behavior is unchanged.
+The additional solves can take substantially longer and share the existing CBC time budget (900 seconds by default). If proof of optimality or the tie-break cannot finish, a warning is logged and the last feasible solution is returned without a reproducibility guarantee. No additional CLI or Python argument is required. Gurobi and MOSEK behavior is unchanged.
 
 
 ## Running
