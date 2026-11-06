@@ -163,5 +163,65 @@ class CbcTieBreakTests(unittest.TestCase):
         self.assertFalse(solver._cbc_is_optimal(model, 1))
 
 
+class CbcProcessFailureTests(unittest.TestCase):
+    cn, lf, rf = [2, 3], [0, 0], [0, 1]
+    canonical = [1, 2, -2, -1, 1, 2]
+
+    def run_with_failures(self, failing_calls):
+        """Solve normally, except that the numbered CBC calls raise as an aborted process does."""
+        original_solve = pulp.LpProblem.solve
+        self.options = []
+        self.primary = []
+
+        def solve(model, command):
+            self.options.append(command.options)
+            if len(self.options) in failing_calls:
+                raise pulp.PulpSolverError('Pulp: Error while trying to execute')
+            result = original_solve(model, command)
+            if not self.primary:
+                self.primary = [tuple(map(int, var.name[3:].split('_'))) for var in model.variables()
+                                if var.name.startswith('cs_') and var.value() > 0.5]
+            return result
+
+        with patch.object(pulp.LpProblem, 'solve', new=solve):
+            return solver.reconstruct_BFB_cbc(self.cn, self.lf, self.rf, 1, max_time=30, max_threads=1)
+
+    def test_primary_failure_retries_with_another_seed(self):
+        with self.assertLogs('BFBArchitect', level='WARNING') as logs:
+            sequence, objective = self.run_with_failures({1})
+        self.assertEqual(self.options[:2], [['RandomS 42'], ['RandomS 1']])
+        self.assertEqual(sequence, self.canonical)
+        self.assertAlmostEqual(objective, 3.0)
+        self.assertIn('retrying with another random seed', logs.output[0])
+
+    def test_tiebreak_failure_retries_and_stays_canonical(self):
+        with self.assertLogs('BFBArchitect', level='WARNING'):
+            sequence, objective = self.run_with_failures({2})
+        self.assertEqual(self.options[1:3], [['RandomS 42'], ['RandomS 1']])
+        self.assertEqual(sequence, self.canonical)
+        self.assertAlmostEqual(objective, 3.0)
+
+    def test_repeated_primary_failure_raises_after_three_attempts(self):
+        with self.assertLogs('BFBArchitect', level='WARNING'), self.assertRaises(pulp.PulpSolverError):
+            self.run_with_failures({1, 2, 3})
+        self.assertEqual(self.options, [['RandomS 42'], ['RandomS 1'], ['RandomS 7']])
+
+    def test_repeated_tiebreak_failure_keeps_the_feasible_solution(self):
+        with self.assertLogs('BFBArchitect', level='WARNING') as logs:
+            sequence, objective = self.run_with_failures({2, 3, 4})
+        self.assertEqual(sequence, solver._build_bfb_string(self.primary))
+        self.assertAlmostEqual(objective, 3.0)
+        self.assertEqual(len(self.options), 4)
+        self.assertIn('tie-break failed', logs.output[-1])
+
+    def test_failure_after_the_deadline_does_not_retry(self):
+        with patch.object(pulp.LpProblem, 'solve',
+                          side_effect=pulp.PulpSolverError('aborted')) as solve, \
+                patch.object(solver._time, 'monotonic', return_value=100), \
+                self.assertRaises(pulp.PulpSolverError):
+            solver._solve_cbc(pulp.LpProblem(), 30, 1, deadline=100)
+        self.assertEqual(solve.call_count, 1)
+
+
 if __name__ == '__main__':
     unittest.main()
