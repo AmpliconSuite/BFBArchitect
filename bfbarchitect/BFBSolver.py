@@ -33,6 +33,30 @@ def _cbc_command(max_time, max_threads):
             return bundled_cbc
     return pulp.COIN_CMD(**settings)
 
+
+def _solve_cbc(model, max_time, max_threads, deadline):
+    """Solve with CBC, retrying with another seed if the CBC process aborts.
+
+    Some CBC builds hit an internal assertion on a particular search path.
+    """
+    from pulp import PulpSolverError
+
+    for seed in (None, 1, 7):
+        command = _cbc_command(max_time, max_threads)
+        if seed is not None:
+            command.options = [f'RandomS {seed}']
+        try:
+            return model.solve(command)
+        except PulpSolverError:
+            if seed == 7:
+                raise
+            if deadline is not None:
+                max_time = deadline - _time.monotonic()
+                if max_time <= 0:
+                    raise
+            LOGGER.warning('CBC stopped unexpectedly; retrying with another random seed.')
+
+
 def _cbc_has_solution(model, result):
     """PuLP 4 returns solve statistics; PuLP 2/3 store solution status on the model."""
     if hasattr(result, 'has_solution'):
@@ -58,7 +82,7 @@ def _canonical_cbc_sequences(model, cs, objective, objective_value, deadline, ma
     Each prefix is proved optimal before it is fixed. Auxiliary ILP variables
     need not be unique. All solves share the original solve time budget.
     """
-    from pulp import lpSum
+    from pulp import PulpSolverError, lpSum
 
     incumbent = _cbc_sequences(cs)
     model += objective <= objective_value + 1e-7, 'canonical_primary_objective'
@@ -73,7 +97,11 @@ def _canonical_cbc_sequences(model, cs, objective, objective_value, deadline, ma
         rank_objective = lpSum(ranks[tuple(map(int, key.split('_')[:3]))] * var
                                for key, var in cs.items() if int(key.rsplit('_', 1)[1]) == t)
         model.setObjective(rank_objective)
-        result = model.solve(_cbc_command(remaining, max_threads))
+        try:
+            result = _solve_cbc(model, remaining, max_threads, deadline)
+        except PulpSolverError:
+            LOGGER.warning('CBC deterministic tie-break failed; returning the last feasible solution.')
+            break
         if not _cbc_is_optimal(model, result):
             LOGGER.warning('CBC deterministic tie-break did not finish; returning the last feasible solution.')
             break
@@ -236,7 +264,7 @@ def reconstruct_BFB_cbc(C, L, R, start, max_time=900, max_threads=8):
     
     # Keep the primary objective: the canonical solves replace model.objective.
     deadline = None if max_time is None else _time.monotonic() + max_time
-    result = model.solve(_cbc_command(max_time, max_threads))
+    result = _solve_cbc(model, max_time, max_threads, deadline)
     if not _cbc_has_solution(model, result):
         raise RuntimeError('CBC did not return a feasible integer BFB solution')
     objective_value = objective.value()
